@@ -1,7 +1,8 @@
 import React, { useState } from "react";
-import { X, Search, Video, Plus, Trash2, MapPin, Gauge } from "lucide-react";
+import { X, Search, Video, Plus, Trash2, MapPin, Gauge, Terminal } from "lucide-react";
 import type { NodeDetail } from "../../types/gis";
 import { api } from "../../services/api";
+import { RemoteControlModal } from "./RemoteControlModal";
 
 interface NodeManagementPanelProps {
   nodes: NodeDetail[];
@@ -20,6 +21,7 @@ export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
 }) => {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
+  const [remoteNode, setRemoteNode] = useState<NodeDetail | null>(null);
 
   const filteredNodes = nodes.filter((n) => {
     const matchSearch = n.name.toLowerCase().includes(search.toLowerCase()) || n.edge_id.toLowerCase().includes(search.toLowerCase());
@@ -124,16 +126,30 @@ export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
                 </span>
               </div>
 
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDelete(node.edge_id);
-                }}
-                className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-100 text-red-600 transition"
-                title="Xóa trạm này"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
+              <div className="flex items-center gap-1">
+                {/* Nút điều khiển từ xa */}
+                <button
+                  id={`btn-remote-${node.edge_id}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRemoteNode(node);
+                  }}
+                  className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-blue-100 text-blue-600 transition"
+                  title="Điều khiển từ xa"
+                >
+                  <Terminal className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete(node.edge_id);
+                  }}
+                  className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-100 text-red-600 transition"
+                  title="Xóa trạm này"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
 
             <div className="text-xs font-bold text-slate-900 line-clamp-1">{node.name}</div>
@@ -153,6 +169,15 @@ export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
           </div>
         ))}
       </div>
+
+      {/* Remote Control Modal */}
+      {remoteNode && (
+        <RemoteControlModal
+          edgeId={remoteNode.edge_id}
+          nodeName={remoteNode.name}
+          onClose={() => setRemoteNode(null)}
+        />
+      )}
     </div>
   );
 };

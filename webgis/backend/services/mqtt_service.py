@@ -108,6 +108,19 @@ class MQTTService:
                     node["status"] = payload.get("status", "online")
                     node["last_seen"] = payload.get("timestamp")
 
+            elif subtopic == "command-result":
+                command_id = payload.get("command_id", "")
+                # Broadcast kết quả lệnh đến tất cả WebGIS client đang kết nối
+                self._broadcast_async({
+                    "type": "command_result",
+                    "edge_id": edge_id,
+                    "command_id": command_id,
+                    "action": payload.get("action", ""),
+                    "status": payload.get("status", ""),
+                    "message": payload.get("message", ""),
+                    "timestamp": payload.get("timestamp", ""),
+                })
+
         except Exception as e:
             print(f"[MQTT PARSE ERROR] {e}")
 

@@ -10,6 +10,7 @@ from config import API_HOST, API_PORT
 from services.websocket_manager import ws_manager
 from services.mqtt_service import mqtt_service
 from routers import gis, nodes, history, commands
+from routers import remote_control
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -43,6 +44,7 @@ app.include_router(gis.router)
 app.include_router(nodes.router)
 app.include_router(history.router)
 app.include_router(commands.router)
+app.include_router(remote_control.router)
 
 # WebSocket Endpoint for Live Telemetry & Device Health Streaming
 @app.websocket("/ws")

@@ -48,7 +48,16 @@ def _encode_jpeg(frame, quality=JPEG_QUALITY):
     return buffer.tobytes()
 
 
-def _upload_http(jpeg_bytes, meta):
+def _upload_http(jpeg_bytes, meta, purpose='congestion', request_id=''):
+    """Upload JPEG snapshot to backend.
+
+    purpose: 'roi_setup' | 'manual' | 'congestion'
+      - 'roi_setup': gửi kèm request_id, backend giữ tạm trong RAM (TTL 60s),
+                     không lưu DB, forward realtime cho WebGIS client.
+      - 'manual' / 'congestion': lưu vĩnh viễn vào DB/disk.
+
+    Auth: header X-Edge-Token (thay vì Authorization Bearer)
+    """
     if not _HAS_URLLIB:
         return False, 'urllib not available'
 
@@ -66,13 +75,16 @@ def _upload_http(jpeg_bytes, meta):
     _add_field('segment_id', meta.get('segment_id', SEGMENT_ID))
     _add_field('event_id', meta.get('event_id', ''))
     _add_field('timestamp', meta.get('timestamp', ''))
-    _add_field('traffic_status', meta.get('traffic_status', 'CONGESTED'))
+    _add_field('traffic_status', meta.get('traffic_status', 'UNKNOWN'))
     _add_field('metrics', json.dumps(meta.get('metrics', {})))
+    _add_field('purpose', purpose)
+    if request_id:
+        _add_field('request_id', request_id)
 
     # File part
     parts.append(('--' + boundary + '\r\n').encode('utf-8'))
     parts.append((
-        'Content-Disposition: form-data; name="snapshot"; filename="%s.jpg"\r\n'
+        'Content-Disposition: form-data; name="file"; filename="%s.jpg"\r\n'
         'Content-Type: image/jpeg\r\n\r\n' % meta.get('event_id', 'snapshot')
     ).encode('utf-8'))
     parts.append(jpeg_bytes)
@@ -80,10 +92,11 @@ def _upload_http(jpeg_bytes, meta):
     parts.append(('--' + boundary + '--\r\n').encode('utf-8'))
 
     body = b''.join(parts)
+    # Dùng X-Edge-Token thay vì Authorization Bearer
     headers = {
         'Content-Type': 'multipart/form-data; boundary=' + boundary,
         'Content-Length': str(len(body)),
-        'Authorization': 'Bearer ' + EDGE_TOKEN,
+        'X-Edge-Token': EDGE_TOKEN,
     }
 
     req = _urllib_request.Request(UPLOAD_ENDPOINT, data=body, headers=headers, method='POST')
@@ -115,13 +128,22 @@ class SnapshotWorker(object):
         except queue.Full:
             pass
 
-    def submit(self, frame, metrics, event_id=None):
+    def submit(self, frame, metrics, event_id=None, purpose='congestion', request_id=''):
+        """Submit a snapshot task.
+
+        purpose: 'roi_setup' | 'manual' | 'congestion'
+          - 'roi_setup': upload tạm, KHÔNG đưa vào offline_outbox khi thất bại.
+          - 'manual' / 'congestion': upload và đưa vào outbox nếu thất bại.
+        request_id: UUID để backend khớp đúng WebSocket session (chỉ dùng cho roi_setup).
+        """
         if event_id is None:
             event_id = str(uuid.uuid4())
         task = {
             'frame': frame,
             'metrics': metrics,
             'event_id': event_id,
+            'purpose': purpose,
+            'request_id': request_id,
             'submitted_at': time.time(),
         }
         try:
@@ -148,6 +170,8 @@ class SnapshotWorker(object):
         event_id = task['event_id']
         metrics = task['metrics']
         frame = task['frame']
+        purpose = task.get('purpose', 'congestion')
+        request_id = task.get('request_id', '')
 
         jpeg_bytes = _encode_jpeg(frame, quality=self._jpeg_quality)
         if jpeg_bytes is None:
@@ -160,14 +184,18 @@ class SnapshotWorker(object):
             'camera_id': CAMERA_ID,
             'segment_id': SEGMENT_ID,
             'timestamp': metrics.get('timestamp', ''),
-            'traffic_status': metrics.get('traffic_status', 'CONGESTED'),
+            'traffic_status': metrics.get('traffic_status', 'UNKNOWN'),
             'metrics': metrics,
         }
 
-        ok, msg = _upload_http(jpeg_bytes, meta)
+        ok, msg = _upload_http(jpeg_bytes, meta, purpose=purpose, request_id=request_id)
         if ok:
-            print('[SNAPSHOT] Uploaded %s (%d bytes)' % (event_id, len(jpeg_bytes)))
+            print('[SNAPSHOT] Uploaded %s (purpose=%s, %d bytes)' % (event_id, purpose, len(jpeg_bytes)))
         else:
-            print('[SNAPSHOT] Upload failed (%s), saving to outbox...' % msg)
-            if self._outbox:
+            print('[SNAPSHOT] Upload failed (%s) for %s (purpose=%s)' % (msg, event_id, purpose))
+            # QUAN TRỌNG: roi_setup KHÔNG đưa vào offline_outbox
+            # Người dùng đang chờ trực tiếp, retry sau vài phút là vô nghĩa
+            if purpose == 'roi_setup':
+                print('[SNAPSHOT] roi_setup upload failed - NOT queuing to outbox (by design)')
+            elif self._outbox:
                 self._outbox.save(jpeg_bytes, meta, event_id)

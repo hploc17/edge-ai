@@ -21,6 +21,14 @@ from communication.mqtt_client import (
     TOPIC_COMMAND_RESULT,
 )
 
+# Đảm bảo các lệnh remote control đã được thêm vào whitelist
+REQUIRED_REMOTE_ACTIONS = {
+    'list_videos', 'capture_preview', 'set_roi_remote',
+    'start_pipeline', 'stop_pipeline', 'capture_snapshot',
+}
+assert REQUIRED_REMOTE_ACTIONS.issubset(ALLOWED_ACTIONS), \
+    "Missing remote control actions in ALLOWED_ACTIONS: %s" % (REQUIRED_REMOTE_ACTIONS - ALLOWED_ACTIONS)
+
 
 class MockMQTTPublisher(object):
     """Mock publisher to capture published messages for testing."""
