@@ -1,0 +1,17 @@
+[Unit]
+Description=Auto Run Edge Traffic AI Docker on Startup
+After=network-online.target nvargus-daemon.service docker.service
+Wants=network-online.target
+Requires=docker.service nvargus-daemon.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=nano
+WorkingDirectory=/home/nano/edge_traffic_optimal
+ExecStart=/bin/bash /home/nano/edge_traffic_optimal/run.sh
+ExecStop=/bin/bash /home/nano/edge_traffic_optimal/stop.sh
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

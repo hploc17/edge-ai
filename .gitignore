@@ -1,0 +1,42 @@
+# Environment & Secrets (TUYỆT ĐỐI KHÔNG ĐƯA LÊN GITHUB)
+.env
+snap/.env
+*.token
+*.pem
+*.key
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.log
+
+# TensorRT Engines & Heavy Models (Build tại chỗ trên Jetson)
+*.engine
+*.onnx
+*.weights
+
+# Video files (nặng, không đưa lên git)
+Video/*.mp4
+Video/*.h264
+Video/*.mkv
+Video/*.avi
+!Video/.gitkeep
+
+# Cache & Local Outbox
+outbox/
+snap/outbox/
+snap/snapshots/
+
+# Node.js & Frontend dependencies
+node_modules/
+webgis/frontend/node_modules/
+webgis/frontend/dist/
+webgis/frontend/.vite/
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

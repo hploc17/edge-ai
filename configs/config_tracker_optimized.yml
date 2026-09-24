@@ -1,0 +1,25 @@
+%YAML:1.0
+################################################################################
+# NvDCF Tracker Configuration (optimized for Jetson Nano)
+################################################################################
+
+BaseConfig:
+  minDetectorConfidence: 0.25
+
+TargetManagement:
+  enableBboxUnClipping: 1
+  maxTargetsPerStream: 100
+
+#-------------------------------------------------------------------------------
+# [Optional] DC Filter
+#-------------------------------------------------------------------------------
+DCF:
+  searchRegionPaddingScale: 3.0
+  maxCorrelationAge: 2
+  bReportTrackingId: 1
+  filterLr: 0.15
+  gaussianSigma: 1.2
+  minPeakResponse: 0.18
+  correlationWindowSize: 0.20
+  enableAspectRatioChange: 0
+  modelFilePath: /opt/nvidia/deepstream/deepstream/samples/models/Tracker/DCF/dcf.bin
