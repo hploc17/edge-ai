@@ -127,18 +127,20 @@ export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
               </div>
 
               <div className="flex items-center gap-1">
-                {/* Nút điều khiển từ xa */}
+                {/* Nút điều khiển từ xa (Luôn hiển thị) */}
                 <button
                   id={`btn-remote-${node.edge_id}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     setRemoteNode(node);
                   }}
-                  className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-blue-100 text-blue-600 transition"
-                  title="Điều khiển từ xa"
+                  className="flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 hover:bg-blue-600 hover:text-white border border-blue-200 text-blue-700 text-[10px] font-bold transition shadow-xs"
+                  title="Điều khiển từ xa & Cấu hình ROI"
                 >
-                  <Terminal className="w-3.5 h-3.5" />
+                  <Terminal className="w-3 h-3" />
+                  <span>Điều khiển</span>
                 </button>
+
                 <button
                   onClick={(e) => {
                     e.stopPropagation();

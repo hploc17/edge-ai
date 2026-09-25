@@ -7,6 +7,7 @@ import { DeviceHealthModal } from "./components/Dashboard/DeviceHealthModal";
 import { CongestionHistoryModal } from "./components/History/CongestionHistoryModal";
 import { NodeManagementPanel } from "./components/Fleet/NodeManagementPanel";
 import { AddNodeModal } from "./components/Fleet/AddNodeModal";
+import { RemoteControlModal } from "./components/Fleet/RemoteControlModal";
 import type { GeoJSONFeatureCollection, NodeDetail, SummaryKPIs, HistoryRecord } from "./types/gis";
 import { api } from "./services/api";
 import { wsService } from "./services/websocket";
@@ -37,6 +38,8 @@ export const App: React.FC = () => {
   const [historySegmentId, setHistorySegmentId] = useState("segment-001");
   const [isFleetOpen, setIsFleetOpen] = useState(false);
   const [isAddNodeOpen, setIsAddNodeOpen] = useState(false);
+  const [remoteNode, setRemoteNode] = useState<NodeDetail | null>(null);
+
 
   // Coordinate Picking on Map
   const [isPickingLocation, setIsPickingLocation] = useState(false);
@@ -264,7 +267,18 @@ export const App: React.FC = () => {
           setHistorySegmentId(segId);
           setIsHistoryOpen(true);
         }}
+        onOpenRemote={() => setRemoteNode(selectedNodeDetail)}
       />
+
+      {/* Remote Control & ROI Setup Modal (khi mở từ Drawer hoặc Map) */}
+      {remoteNode && (
+        <RemoteControlModal
+          edgeId={remoteNode.edge_id}
+          nodeName={remoteNode.name}
+          onClose={() => setRemoteNode(null)}
+        />
+      )}
+
 
       {/* Device Health Diagnostics Modal (Gói 2) */}
       {isHealthOpen && selectedNodeDetail && (

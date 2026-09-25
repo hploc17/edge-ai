@@ -1,6 +1,6 @@
 import React from "react";
 import ReactECharts from "echarts-for-react";
-import { X, Gauge, Car, AlertTriangle, Cpu, History, Radio, Ruler } from "lucide-react";
+import { X, Gauge, Car, AlertTriangle, Cpu, History, Radio, Ruler, Terminal } from "lucide-react";
 import type { NodeDetail } from "../../types/gis";
 
 interface NodeDashboardDrawerProps {
@@ -8,13 +8,15 @@ interface NodeDashboardDrawerProps {
   onClose: () => void;
   onOpenHealth: () => void;
   onOpenHistoryForSegment: (segmentId: string) => void;
+  onOpenRemote?: () => void;
 }
 
 export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
   node,
   onClose,
   onOpenHealth,
-  onOpenHistoryForSegment
+  onOpenHistoryForSegment,
+  onOpenRemote
 }) => {
   if (!node) return null;
 
@@ -229,22 +231,33 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
       </div>
 
       {/* Drawer Action Footer */}
-      <div className="p-3 bg-slate-50/90 border-t border-slate-200 grid grid-cols-2 gap-2">
-        <button
-          onClick={onOpenHealth}
-          className="flex items-center justify-center space-x-1.5 py-2.5 px-3 rounded-xl bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 text-xs font-bold transition shadow-sm"
-        >
-          <Cpu className="w-4 h-4 text-blue-600" />
-          <span>Phần cứng</span>
-        </button>
+      <div className="p-3 bg-slate-50/90 border-t border-slate-200 flex flex-col gap-2">
+        {onOpenRemote && (
+          <button
+            onClick={onOpenRemote}
+            className="w-full flex items-center justify-center space-x-2 py-2.5 px-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-bold transition shadow-md shadow-blue-500/25"
+          >
+            <Terminal className="w-4 h-4" />
+            <span>Điều khiển từ xa & Cấu hình ROI Jetson</span>
+          </button>
+        )}
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={onOpenHealth}
+            className="flex items-center justify-center space-x-1.5 py-2 px-3 rounded-xl bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 text-xs font-bold transition shadow-sm"
+          >
+            <Cpu className="w-3.5 h-3.5 text-blue-600" />
+            <span>Phần cứng</span>
+          </button>
 
-        <button
-          onClick={() => onOpenHistoryForSegment(node.segment_id || "segment-001")}
-          className="flex items-center justify-center space-x-1.5 py-2.5 px-3 rounded-xl bg-indigo-50 hover:bg-indigo-100 border border-indigo-300 text-indigo-700 text-xs font-bold transition shadow-sm"
-        >
-          <History className="w-4 h-4 text-indigo-600" />
-          <span>Lịch sử kẹt xe</span>
-        </button>
+          <button
+            onClick={() => onOpenHistoryForSegment(node.segment_id || "segment-001")}
+            className="flex items-center justify-center space-x-1.5 py-2 px-3 rounded-xl bg-indigo-50 hover:bg-indigo-100 border border-indigo-300 text-indigo-700 text-xs font-bold transition shadow-sm"
+          >
+            <History className="w-3.5 h-3.5 text-indigo-600" />
+            <span>Lịch sử kẹt xe</span>
+          </button>
+        </div>
       </div>
     </div>
   );
