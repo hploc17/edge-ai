@@ -99,9 +99,18 @@ def notify_command_result(command_id: str, result: dict):
     if command_id in _pending_commands:
         pending = _pending_commands.pop(command_id, None)
         if pending and not pending["future"].done():
-            pending["future"].get_event_loop().call_soon_threadsafe(
-                pending["future"].set_result, result
-            )
+            fut = pending["future"]
+            loop = getattr(fut, "get_loop", None)
+            if loop and callable(loop):
+                ev_loop = loop()
+            else:
+                ev_loop = pending.get("loop")
+
+            if ev_loop and ev_loop.is_running():
+                ev_loop.call_soon_threadsafe(fut.set_result, result)
+            else:
+                fut.set_result(result)
+
 
 
 # ── GET /api/v1/nodes/{edge_id}/videos ───────────────────────────────────────

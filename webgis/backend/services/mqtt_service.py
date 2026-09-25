@@ -110,6 +110,13 @@ class MQTTService:
 
             elif subtopic == "command-result":
                 command_id = payload.get("command_id", "")
+                # Notify pending HTTP futures in remote_control router
+                try:
+                    from routers.remote_control import notify_command_result
+                    notify_command_result(command_id, payload)
+                except Exception as ex:
+                    print(f"[MQTT] notify_command_result error: {ex}")
+
                 # Broadcast kết quả lệnh đến tất cả WebGIS client đang kết nối
                 self._broadcast_async({
                     "type": "command_result",
@@ -120,6 +127,7 @@ class MQTTService:
                     "message": payload.get("message", ""),
                     "timestamp": payload.get("timestamp", ""),
                 })
+
 
         except Exception as e:
             print(f"[MQTT PARSE ERROR] {e}")
