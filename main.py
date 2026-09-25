@@ -24,13 +24,15 @@ import numpy as np
 # import time.
 SCRIPT_DIR = Path(__file__).resolve().parent
 SNAPSHOT_DIR = SCRIPT_DIR / 'snap'
-if str(SNAPSHOT_DIR) not in sys.path:
-    sys.path.insert(0, str(SNAPSHOT_DIR))
+
+# Đảm bảo thư mục gốc project ở vị trí đầu tiên của sys.path để package config/ được ưu tiên
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 try:
-    from config import load_env_file
-    from runtime import create_from_env
-    from deepstream_integration import attach_snapshot_probe
+    from snap.config import load_env_file
+    from snap.runtime import create_from_env
+    from snap.deepstream_integration import attach_snapshot_probe
 except ImportError as error:
     raise RuntimeError(
         'Missing snapshot package in %s: %s' % (SNAPSHOT_DIR, error)
