@@ -448,6 +448,31 @@ def make_upload_preview_fn(backend_url, edge_id, edge_token):
     return upload
 
 
+def _load_env_file(path, override=True):
+    """Đọc file .env đơn giản, tương thích Python 3.6 không cần thư viện ngoài."""
+    if not os.path.isfile(path):
+        return False
+    try:
+        # Python 2/3 compatibility for open
+        try:
+            f = open(path, 'r', encoding='utf-8')
+        except TypeError:
+            f = open(path, 'r')
+        with f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, val = line.split('=', 1)
+                    key = key.strip()
+                    val = val.strip().strip('"\'')
+                    if override or key not in os.environ:
+                        os.environ[key] = val
+        return True
+    except Exception as e:
+        _log('Warning: could not read .env at %s: %s' % (path, e))
+        return False
+
+
 # ── Entry point: khởi động Jetson Agent ──────────────────────────────────────
 
 def run_agent():
@@ -456,21 +481,24 @@ def run_agent():
     Tải cấu hình từ environment variables, kết nối MQTT,
     đăng ký tất cả handler lệnh và chạy vòng lặp vô hạn.
     """
-    # Nạp môi trường
+    # Nạp môi trường: Ưu tiên số 1 là file .env ở thư mục gốc project
+    root_env_path = os.path.join(SCRIPT_DIR, '.env')
+    if _load_env_file(root_env_path, override=True):
+        _log('Loaded environment from: %s' % root_env_path)
+
+    # Nạp bổ sung từ snap/.env nếu có biến chưa được đặt
     snap_env_path = os.path.join(SCRIPT_DIR, 'snap', '.env')
     if os.path.isfile(snap_env_path):
-        try:
-            from snap.config import load_env_file
-            load_env_file(snap_env_path)
-        except ImportError:
-            pass
+        _load_env_file(snap_env_path, override=False)
 
     edge_id = os.getenv('EDGE_ID', 'edge-01')
-    backend_url = os.getenv('BACKEND_URL', 'http://192.168.1.10:3000')
+    backend_url = os.getenv('BACKEND_URL', 'http://192.168.1.10:8000')
     edge_token = os.getenv('EDGE_TOKEN', 'dev-edge-token')
 
     _log('Starting Jetson Agent for edge_id=%s' % edge_id)
-    _log('Backend URL: %s' % backend_url)
+    _log('Configured Backend URL: %s' % backend_url)
+    _log('Configured MQTT Host: %s:%s' % (os.getenv('MQTT_HOST', 'hivemq'), os.getenv('MQTT_PORT', '8883')))
+
 
     # Import MQTT publisher
     sys.path.insert(0, SCRIPT_DIR)

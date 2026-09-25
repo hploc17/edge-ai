@@ -25,6 +25,28 @@ import uuid
 
 import paho.mqtt.client as mqtt_lib
 
+# Nạp tự động .env từ thư mục gốc
+def _load_env_file(path):
+    if not os.path.isfile(path):
+        return
+    try:
+        try:
+            f = open(path, 'r', encoding='utf-8')
+        except TypeError:
+            f = open(path, 'r')
+        with f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, val = line.split('=', 1)
+                    os.environ.setdefault(key.strip(), val.strip().strip('"\''))
+    except Exception:
+        pass
+
+_root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_load_env_file(os.path.join(_root_dir, '.env'))
+_load_env_file(os.path.join(_root_dir, 'snap', '.env'))
+
 # ── Topic contract (fixed, do not change without coordinating with Backend) ──
 EDGE_ID = os.getenv('EDGE_ID', 'edge-01')
 CAMERA_ID = os.getenv('CAMERA_ID', 'camera-01')
