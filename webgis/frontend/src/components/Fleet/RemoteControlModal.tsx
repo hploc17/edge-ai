@@ -16,8 +16,10 @@ import {
   ZoomIn,
 } from "lucide-react";
 import axios from "axios";
+import { wsService } from "../../services/websocket";
 
 const API_BASE = "http://localhost:8000/api/v1";
+
 
 // ── Kiểu dữ liệu ──────────────────────────────────────────────────────────────
 
@@ -104,7 +106,6 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
   edgeId,
   nodeName,
   onClose,
-  wsRef,
 }) => {
   const [stage, setStage] = useState<Stage>("idle");
   const [videos, setVideos] = useState<string[]>([]);
@@ -130,16 +131,14 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
   // ── Lắng nghe WebSocket để nhận preview frame và command_result ─────────────
 
   useEffect(() => {
-    const ws = wsRef?.current;
-    if (!ws) return;
-
-    const handler = (event: MessageEvent) => {
+    const unsubscribe = wsService.subscribe((msg: any) => {
       try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "preview_frame" && msg.edge_id === edgeId && msg.request_id === requestId) {
-          setPreviewImage(msg.image_data);
-          setStage("preview_ready");
-          setStatusMessage("Đã nhận khung hình từ Jetson. Chọn chế độ vẽ ROI.");
+        if (msg.type === "preview_frame" && msg.edge_id === edgeId) {
+          if (msg.image_data) {
+            setPreviewImage(msg.image_data);
+            setStage("preview_ready");
+            setStatusMessage("Đã nhận khung hình từ Jetson. Chọn chế độ vẽ ROI.");
+          }
         }
         if (msg.type === "command_result" && msg.edge_id === edgeId) {
           if (msg.action === "set_roi_remote") {
@@ -170,11 +169,11 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
       } catch (e) {
         // ignore
       }
-    };
+    });
 
-    ws.addEventListener("message", handler);
-    return () => ws.removeEventListener("message", handler);
-  }, [wsRef, edgeId, requestId]);
+    return () => unsubscribe();
+  }, [edgeId]);
+
 
   // ── Vẽ lại canvas mỗi khi ROI thay đổi ───────────────────────────────────
 
@@ -258,13 +257,36 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
         source_type: "file",
         source: selectedVideo,
       });
-      setRequestId(res.data.request_id || "");
-      setStatusMessage("Đang chờ Jetson chụp khung hình (tối đa 30s)...");
+      const reqId = res.data.request_id || "";
+      setRequestId(reqId);
+      setStatusMessage("Đang chờ Jetson chụp khung hình...");
+
+      // Polling fallback nếu WebSocket bị trễ
+      let attempts = 0;
+      const pollTimer = setInterval(async () => {
+        attempts++;
+        if (attempts > 12) {
+          clearInterval(pollTimer);
+          return;
+        }
+        try {
+          const pollRes = await axios.get(`${API_BASE}/nodes/${edgeId}/preview/${reqId}`);
+          if (pollRes.data && pollRes.data.image_data) {
+            clearInterval(pollTimer);
+            setPreviewImage(pollRes.data.image_data);
+            setStage("preview_ready");
+            setStatusMessage("Đã nhận khung hình từ Jetson. Chọn chế độ vẽ ROI.");
+          }
+        } catch (_) {
+          // Chưa có frame, chờ lượt poll tiếp theo
+        }
+      }, 2000);
     } catch (e: any) {
       setStage("selecting_video");
       setErrorMessage("Không thể gửi yêu cầu preview: " + e.message);
     }
   };
+
 
   // ── Step 3: Lưu ROI ─────────────────────────────────────────────────────────
 
@@ -340,7 +362,10 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
             </div>
             <div>
               <h2 className="text-sm font-bold text-white">Điều khiển Jetson từ xa</h2>
-              <p className="text-[11px] text-slate-400 font-mono">{edgeId} · {nodeName}</p>
+              <p className="text-[11px] text-slate-400 font-mono">
+                {edgeId} · {nodeName}{requestId ? ` · ID: ${requestId.slice(0, 8)}` : ""}
+              </p>
+
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition">

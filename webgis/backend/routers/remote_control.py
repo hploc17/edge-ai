@@ -252,6 +252,29 @@ async def receive_jetson_capture(
             })
         return {"status": "ok", "purpose": "roi_setup", "request_id": request_id}
 
+
+@router.get("/api/v1/nodes/{edge_id}/preview/{request_id}")
+async def get_cached_preview_frame(edge_id: str, request_id: str):
+    """Lấy frame preview đã cache trong RAM (phục vụ fallback khi WebSocket rớt gói)."""
+    _clean_expired_previews()
+    item = _preview_cache.get(request_id)
+    if not item:
+        # Nếu chưa tìm thấy đúng request_id, tìm frame mới nhất của node
+        matches = [v for v in _preview_cache.values() if v.get("edge_id") == edge_id]
+        if matches:
+            item = matches[-1]
+        else:
+            raise HTTPException(status_code=404, detail="Preview frame not ready yet")
+    import base64 as _b64
+    img_b64 = _b64.b64encode(item["data"]).decode("utf-8")
+    return {
+        "status": "ready",
+        "edge_id": edge_id,
+        "request_id": request_id,
+        "image_data": f"data:image/jpeg;base64,{img_b64}",
+    }
+
+
     else:
         # Lưu vĩnh viễn vào disk
         import os as _os
