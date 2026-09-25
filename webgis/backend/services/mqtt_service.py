@@ -36,6 +36,9 @@ class MQTTService:
             print(f"[MQTT] Connecting to broker {MQTT_HOST}:{MQTT_PORT}...")
             self._client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=60)
             self._client.loop_start()
+        except Exception as e:
+            print(f"[MQTT] Connect error: {e}")
+
         # Kiểm tra biến ENABLE_SIMULATION: mặc định tắt để chỉ đọc dữ liệu thật từ Jetson
         import os
         enable_sim = os.getenv("ENABLE_SIMULATION", "false").lower() in ("true", "1", "yes")
