@@ -476,7 +476,15 @@ def run_agent():
     sys.path.insert(0, SCRIPT_DIR)
     from communication.mqtt_client import MQTTPublisher, HeartbeatThread
     from communication.command_router import CommandHandler
-    from communication.system_metrics import collect_comprehensive_health
+    try:
+        from communication.system_metrics import collect_comprehensive_health
+    except (ImportError, AttributeError):
+        try:
+            from system_metrics import collect_comprehensive_health
+        except (ImportError, AttributeError):
+            def collect_comprehensive_health():
+                return {'general': {'service_status': 'running', 'fallback': True}}
+
 
     # Trạng thái dùng chung giữa các handler (thay dict thay cho global)
     agent_state = {

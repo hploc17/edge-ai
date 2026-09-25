@@ -322,6 +322,11 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
   // ── Render ──────────────────────────────────────────────────────────────────
 
   const isCanvasActive = stage === "preview_ready" || stage === "drawing";
+  // Tách biến này ra ngoài để tránh TypeScript type narrowing trong JSX block
+  const isSavingRoi = stage === "saving_roi";
+  const isLoadingVideos = stage === "loading_videos";
+  const isLoadingPreview = stage === "loading_preview";
+  const isPipelineStage = stage === "pipeline_control";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
@@ -356,10 +361,10 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
               <button
                 id="btn-load-videos"
                 onClick={handleLoadVideos}
-                disabled={stage === "loading_videos"}
+                disabled={isLoadingVideos}
                 className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold transition"
               >
-                {stage === "loading_videos" ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                {isLoadingVideos ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
                 Tải danh sách video
               </button>
 
@@ -390,10 +395,10 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
               <button
                 id="btn-get-preview"
                 onClick={handleGetPreview}
-                disabled={!selectedVideo || stage === "loading_preview"}
+                disabled={!selectedVideo || isLoadingPreview}
                 className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-orange-600 hover:bg-orange-500 disabled:opacity-40 text-white text-xs font-bold transition"
               >
-                {stage === "loading_preview" ? <Loader2 className="w-4 h-4 animate-spin" /> : <ZoomIn className="w-4 h-4" />}
+                {isLoadingPreview ? <Loader2 className="w-4 h-4 animate-spin" /> : <ZoomIn className="w-4 h-4" />}
                 Lấy khung hình preview
               </button>
             </div>
@@ -458,17 +463,17 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                 <button
                   id="btn-save-roi"
                   onClick={handleSaveRoi}
-                  disabled={roiConfig.detectionRoi.length < 3 || roiConfig.analysisRoi.length < 3 || stage === "saving_roi"}
+                  disabled={roiConfig.detectionRoi.length < 3 || roiConfig.analysisRoi.length < 3 || isSavingRoi}
                   className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-bold transition"
                 >
-                  {stage === "saving_roi" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  {isSavingRoi ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                   Lưu cấu hình ROI
                 </button>
               </div>
             )}
 
             {/* Step 4: Pipeline */}
-            {stage === "pipeline_control" && (
+            {isPipelineStage && (
               <div className="space-y-2">
                 <div className="flex items-center gap-2 text-xs font-bold text-slate-300 uppercase tracking-wide">
                   <Play className="w-3.5 h-3.5 text-emerald-400" />
