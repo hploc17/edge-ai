@@ -32,48 +32,9 @@ def get_congestion_snapshots(
     segment_id: Optional[str] = Query(None),
     limit: int = Query(20, ge=1, le=100)
 ):
-    """Return list of congestion snapshots captured by Jetson Nano nodes."""
-    snapshots = [
-        {
-            "snapshot_id": "snap-001",
-            "edge_id": "edge-01",
-            "segment_id": "segment-001",
-            "timestamp": "2026-09-21T07:45:12+07:00",
-            "time_str": "07:45",
-            "location_name": "Ngã tư Nguyễn Trãi - Khuất Duy Tiến",
-            "traffic_status": "CONGESTED",
-            "congestion_score": 88,
-            "avg_speed_kmh": 7.5,
-            "vehicle_count": 42,
-            "image_url": "https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?auto=format&fit=crop&w=800&q=80"
-        },
-        {
-            "snapshot_id": "snap-002",
-            "edge_id": "edge-01",
-            "segment_id": "segment-001",
-            "timestamp": "2026-09-21T08:15:30+07:00",
-            "time_str": "08:15",
-            "location_name": "Ngã tư Nguyễn Trãi - Khuất Duy Tiến",
-            "traffic_status": "CONGESTED",
-            "congestion_score": 82,
-            "avg_speed_kmh": 9.2,
-            "vehicle_count": 38,
-            "image_url": "https://images.unsplash.com/photo-1545179605-1296651e4d43?auto=format&fit=crop&w=800&q=80"
-        },
-        {
-            "snapshot_id": "snap-003",
-            "edge_id": "edge-02",
-            "segment_id": "segment-002",
-            "timestamp": "2026-09-21T17:35:10+07:00",
-            "time_str": "17:35",
-            "location_name": "Vành Đai 3 - Khuất Duy Tiến",
-            "traffic_status": "CONGESTED",
-            "congestion_score": 85,
-            "avg_speed_kmh": 8.0,
-            "vehicle_count": 35,
-            "image_url": "https://images.unsplash.com/photo-1506521781263-d8422e82f27a?auto=format&fit=crop&w=800&q=80"
-        }
-    ]
+    """Return list of real congestion snapshots captured by Jetson Nano nodes."""
+    # Only return real snapshots from actual captures
+    snapshots = []
     if segment_id:
-        snapshots = [s for s in snapshots if s["segment_id"] == segment_id]
+        snapshots = [s for s in snapshots if s.get("segment_id") == segment_id]
     return snapshots[:limit]
