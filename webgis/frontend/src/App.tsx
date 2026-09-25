@@ -149,6 +149,122 @@ export const App: React.FC = () => {
             latest_health: msg.health
           };
         });
+      } else if (msg.type === "heartbeat") {
+        const edgeId = msg.edge_id;
+        const status = msg.status || "online";
+        setNodesGeoJSON((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            features: prev.features.map((f) => {
+              if (f.properties.edge_id === edgeId) {
+                return {
+                  ...f,
+                  properties: {
+                    ...f.properties,
+                    status: status,
+                    last_seen: msg.last_seen
+                  }
+                };
+              }
+              return f;
+            })
+          };
+        });
+        setNodesList((prev) =>
+          prev.map((n) => (n.edge_id === edgeId ? { ...n, status, last_seen: msg.last_seen } : n))
+        );
+      } else if (msg.type === "node_registered") {
+        const rawNode = msg.node || {};
+        const edgeId = msg.edge_id || rawNode.edge_id;
+        const lat = Number(rawNode.latitude ?? rawNode.geo?.lat ?? 20.998412);
+        const lng = Number(rawNode.longitude ?? rawNode.geo?.lng ?? 105.795123);
+        const nodeName = rawNode.name || rawNode.device_name || `Camera AI (${edgeId})`;
+
+        // Update or append to nodes list
+        setNodesList((prev) => {
+          const idx = prev.findIndex((n) => n.edge_id === edgeId);
+          const fullNode: NodeDetail = {
+            edge_id: edgeId,
+            name: nodeName,
+            camera_id: rawNode.camera_id || "camera-01",
+            segment_id: rawNode.segment_id || "segment-001",
+            road_name: rawNode.road_name || "Đường Nguyễn Trãi",
+            latitude: lat,
+            longitude: lng,
+            altitude_m: rawNode.altitude_m || 12.5,
+            camera_heading: rawNode.camera_heading || 45.0,
+            camera_fov: rawNode.camera_fov || 65.0,
+            status: "online",
+            traffic_status: rawNode.traffic_status || "FREE",
+            congestion_score: rawNode.congestion_score || 0,
+            avg_speed_kmh: rawNode.avg_speed_kmh || 0,
+            current_vehicle_count: rawNode.current_vehicle_count || 0,
+            stopped_vehicle_count: rawNode.stopped_vehicle_count || 0,
+            density_veh_per_km_lane: rawNode.density_veh_per_km_lane || 0,
+            counts_by_class: rawNode.counts_by_class || { motorcycle: 0, car: 0, bus: 0, truck: 0 },
+            last_seen: rawNode.last_seen || rawNode.timestamp || new Date().toISOString(),
+            ...rawNode
+          };
+          if (idx >= 0) {
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], ...fullNode };
+            return updated;
+          }
+          return [...prev, fullNode];
+        });
+
+        // Update or append to map GeoJSON points
+        setNodesGeoJSON((prev) => {
+          if (!prev) return prev;
+          const exists = prev.features.some((f) => f.properties.edge_id === edgeId);
+          if (exists) {
+            return {
+              ...prev,
+              features: prev.features.map((f) =>
+                f.properties.edge_id === edgeId
+                  ? {
+                      ...f,
+                      properties: {
+                        ...f.properties,
+                        status: "online",
+                        last_seen: rawNode.last_seen || rawNode.timestamp,
+                        name: nodeName
+                      }
+                    }
+                  : f
+              )
+            };
+          }
+          // Dynamically create GeoJSON Feature for the newly connected Jetson node
+          const newFeature = {
+            type: "Feature" as const,
+            geometry: {
+              type: "Point" as const,
+              coordinates: [lng, lat]
+            },
+            properties: {
+              edge_id: edgeId,
+              name: nodeName,
+              camera_id: rawNode.camera_id || "camera-01",
+              segment_id: rawNode.segment_id || "segment-001",
+              road_name: rawNode.road_name || "Đường Nguyễn Trãi",
+              heading: Number(rawNode.camera_heading || 45.0),
+              fov: Number(rawNode.camera_fov || 65.0),
+              status: "online",
+              traffic_status: "FREE",
+              congestion_score: 0,
+              avg_speed_kmh: 0,
+              vehicle_count: 0,
+              marker_color: "#10B981",
+              last_seen: rawNode.last_seen || rawNode.timestamp
+            }
+          };
+          return {
+            ...prev,
+            features: [...prev.features, newFeature]
+          };
+        });
       }
     });
 

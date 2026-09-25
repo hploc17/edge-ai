@@ -82,6 +82,22 @@ class MQTTService:
             subtopic = parts[2]
 
             if subtopic == "telemetry":
+                if not store.get_node(edge_id):
+                    # Auto-discover node if telemetry received first
+                    new_node = {
+                        "edge_id": edge_id,
+                        "name": f"Camera AI Jetson ({edge_id})",
+                        "camera_id": payload.get("camera_id", "camera-01"),
+                        "segment_id": payload.get("segment_id", "segment-001"),
+                        "status": "online",
+                        "last_seen": payload.get("timestamp") or time.strftime("%Y-%m-%dT%H:%M:%S+07:00")
+                    }
+                    store.upsert_node(new_node)
+                    self._broadcast_async({
+                        "type": "node_registered",
+                        "edge_id": edge_id,
+                        "node": store.get_node(edge_id)
+                    })
                 store.update_telemetry(edge_id, payload)
                 self._broadcast_async({
                     "type": "telemetry",
@@ -90,11 +106,13 @@ class MQTTService:
                 })
 
             elif subtopic == "registration":
-                store.upsert_node(payload)
+                payload["edge_id"] = edge_id
+                saved_node = store.upsert_node(payload)
+                print(f"[MQTT] Auto-registered/updated Edge node: {edge_id}")
                 self._broadcast_async({
                     "type": "node_registered",
                     "edge_id": edge_id,
-                    "node": payload
+                    "node": store.get_node(edge_id)
                 })
 
             elif subtopic == "device-health":
@@ -108,9 +126,31 @@ class MQTTService:
 
             elif subtopic == "heartbeat":
                 node = store.get_node(edge_id)
-                if node:
+                if not node:
+                    # Auto-discover node from heartbeat
+                    new_node = {
+                        "edge_id": edge_id,
+                        "name": f"Camera AI Jetson ({edge_id})",
+                        "camera_id": payload.get("camera_id", "camera-01"),
+                        "status": payload.get("status", "online"),
+                        "last_seen": payload.get("timestamp") or time.strftime("%Y-%m-%dT%H:%M:%S+07:00")
+                    }
+                    store.upsert_node(new_node)
+                    print(f"[MQTT] Auto-discovered Edge node from heartbeat: {edge_id}")
+                    self._broadcast_async({
+                        "type": "node_registered",
+                        "edge_id": edge_id,
+                        "node": store.get_node(edge_id)
+                    })
+                else:
                     node["status"] = payload.get("status", "online")
-                    node["last_seen"] = payload.get("timestamp")
+                    node["last_seen"] = payload.get("timestamp") or time.strftime("%Y-%m-%dT%H:%M:%S+07:00")
+                    self._broadcast_async({
+                        "type": "heartbeat",
+                        "edge_id": edge_id,
+                        "status": node["status"],
+                        "last_seen": node["last_seen"]
+                    })
 
             elif subtopic == "command-result":
                 command_id = payload.get("command_id", "")

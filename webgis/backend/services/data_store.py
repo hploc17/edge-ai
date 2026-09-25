@@ -341,12 +341,36 @@ class DataStore:
     def upsert_node(self, node_data: Dict[str, Any]) -> Dict[str, Any]:
         edge_id = node_data.get("edge_id", f"edge-{int(time.time()) % 1000}")
         node_data["edge_id"] = edge_id
+
+        # Normalize nested geo dictionary if present (from registration profile)
+        if "geo" in node_data and isinstance(node_data["geo"], dict):
+            geo = node_data["geo"]
+            node_data.setdefault("latitude", geo.get("lat", 20.998412))
+            node_data.setdefault("longitude", geo.get("lng", 105.795123))
+            node_data.setdefault("segment_id", geo.get("segment_id", "segment-001"))
+            node_data.setdefault("road_name", geo.get("road_name", "Đường Nguyễn Trãi"))
+            node_data.setdefault("camera_heading", geo.get("heading", 45.0))
+            node_data.setdefault("camera_fov", geo.get("fov", 65.0))
+            node_data.setdefault("altitude_m", geo.get("altitude_m", 12.5))
+
+        # Default fallbacks for coordinates & names
+        node_data.setdefault("name", node_data.get("device_name") or f"Camera AI Jetson ({edge_id})")
+        node_data.setdefault("camera_id", "camera-01")
+        node_data.setdefault("segment_id", "segment-001")
+        node_data.setdefault("road_name", "Đường Nguyễn Trãi")
+        node_data.setdefault("latitude", 20.998412)
+        node_data.setdefault("longitude", 105.795123)
+        node_data.setdefault("camera_heading", 45.0)
+        node_data.setdefault("camera_fov", 65.0)
         node_data.setdefault("last_seen", datetime.now().isoformat())
         node_data.setdefault("status", "online")
         node_data.setdefault("traffic_status", "FREE")
         node_data.setdefault("congestion_score", 15)
-        self.nodes[edge_id] = node_data
-        return node_data
+
+        existing = self.nodes.get(edge_id, {})
+        merged = {**existing, **node_data}
+        self.nodes[edge_id] = merged
+        return merged
 
     def delete_node(self, edge_id: str) -> bool:
         if edge_id in self.nodes:

@@ -545,8 +545,28 @@ def run_agent():
     cmd_handler.register('start_video_test', make_start_pipeline_handler(agent_state))
 
 
+    # Thiết lập hồ sơ thiết bị để WebGIS tự động nhận diện (Auto-discovery) và vẽ Node trên bản đồ
+    registration_profile = {
+        'event': 'device_registered',
+        'edge_id': edge_id,
+        'name': os.getenv('NODE_NAME', 'Camera AI Jetson (%s)' % edge_id),
+        'device_name': os.getenv('NODE_NAME', 'Camera AI Jetson (%s)' % edge_id),
+        'camera_id': os.getenv('CAMERA_ID', 'camera-01'),
+        'segment_id': os.getenv('SEGMENT_ID', 'segment-001'),
+        'road_name': os.getenv('ROAD_NAME', 'Đường Nguyễn Trãi'),
+        'latitude': float(os.getenv('NODE_LAT', 20.998412)),
+        'longitude': float(os.getenv('NODE_LON', 105.795123)),
+        'camera_heading': float(os.getenv('CAMERA_HEADING', 45.0)),
+        'camera_fov': float(os.getenv('CAMERA_FOV', 65.0)),
+        'status': 'online',
+        'model_version': os.getenv('MODEL_VERSION', 'exp.engine'),
+        'timestamp': time.strftime("%Y-%m-%dT%H:%M:%S+07:00")
+    }
+    publisher.set_registration_profile(registration_profile)
+
     # Kết nối MQTT
     publisher.start()
+    publisher.publish_registration()
     heartbeat = HeartbeatThread(publisher)
     heartbeat.start()
 
