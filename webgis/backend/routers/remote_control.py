@@ -252,6 +252,27 @@ async def receive_jetson_capture(
             })
         return {"status": "ok", "purpose": "roi_setup", "request_id": request_id}
 
+    else:
+        # Lưu vĩnh viễn vào disk
+        import os as _os
+        from config import SNAPSHOTS_DIR
+        from pathlib import Path
+        snap_dir = Path(str(SNAPSHOTS_DIR)) / edge_id
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        snap_id = str(uuid.uuid4())
+        snap_path = snap_dir / f"{snap_id}.jpg"
+        snap_path.write_bytes(image_bytes)
+
+        # Thông báo WebSocket để cập nhật UI
+        await ws_manager.broadcast({
+            "type": "snapshot_saved",
+            "edge_id": edge_id,
+            "purpose": purpose,
+            "snapshot_id": snap_id,
+            "timestamp": timestamp,
+        })
+        return {"status": "ok", "purpose": purpose, "snapshot_id": snap_id}
+
 
 @router.get("/api/v1/nodes/{edge_id}/preview/{request_id}")
 async def get_cached_preview_frame(edge_id: str, request_id: str):
@@ -275,29 +296,8 @@ async def get_cached_preview_frame(edge_id: str, request_id: str):
     }
 
 
-    else:
-        # Lưu vĩnh viễn vào disk
-        import os as _os
-        from config import SNAPSHOTS_DIR
-        from pathlib import Path
-        snap_dir = Path(str(SNAPSHOTS_DIR)) / edge_id
-        snap_dir.mkdir(parents=True, exist_ok=True)
-        snap_id = str(uuid.uuid4())
-        snap_path = snap_dir / f"{snap_id}.jpg"
-        snap_path.write_bytes(image_bytes)
-
-        # Thông báo WebSocket để cập nhật UI
-        await ws_manager.broadcast({
-            "type": "snapshot_saved",
-            "edge_id": edge_id,
-            "purpose": purpose,
-            "snapshot_id": snap_id,
-            "timestamp": timestamp,
-        })
-        return {"status": "ok", "purpose": purpose, "snapshot_id": snap_id}
-
-
 # ── POST /api/v1/nodes/{edge_id}/roi ─────────────────────────────────────────
+
 
 @router.post("/api/v1/nodes/{edge_id}/roi")
 async def set_remote_roi(edge_id: str, req: SetRoiRequest):
