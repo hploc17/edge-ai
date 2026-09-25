@@ -536,12 +536,14 @@ def run_agent():
     cmd_handler.register('start_pipeline', make_start_pipeline_handler(agent_state))
     cmd_handler.register('stop_pipeline', make_stop_pipeline_handler(agent_state))
     cmd_handler.register('capture_snapshot', make_capture_snapshot_handler(agent_state))
+    cmd_handler.register('capture_test_snapshot', make_capture_snapshot_handler(agent_state))
     cmd_handler.register('request_status', make_request_status_handler(agent_state))
     cmd_handler.register('get_health', lambda data: collect_comprehensive_health())
     # Legacy aliases
     cmd_handler.register('restart_analytics', make_stop_pipeline_handler(agent_state))
     cmd_handler.register('reload_config', lambda data: 'Config reload queued (restart pipeline to apply)')
     cmd_handler.register('start_video_test', make_start_pipeline_handler(agent_state))
+
 
     # Kết nối MQTT
     publisher.start()

@@ -38,6 +38,7 @@ ALLOWED_ACTIONS = frozenset([
     'get_health',
     'request_status',
     # Legacy compatibility
+    'capture_test_snapshot',
     'restart_analytics',
     'reload_config',
     'start_video_test',
