@@ -151,8 +151,9 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
           if (msg.action === "start_pipeline") {
             if (msg.status === "completed") {
               setPipelineRunning(true);
+              setErrorMessage("");
               setStatusMessage("✅ Pipeline khởi động thành công (PID=" + (msg.message?.pid || "?") + ")");
-            } else {
+            } else if (!pipelineRunning) {
               setErrorMessage("Lỗi khởi động pipeline: " + JSON.stringify(msg.message));
             }
           }

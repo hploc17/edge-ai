@@ -321,8 +321,11 @@ class JetsonSimulator:
                 w = params.get('road_width_m', 7.5)
                 l = params.get('road_length_m', 50.0)
                 video_display = os.path.basename(str(source_path))
-                msg = f'Jetson Nano: Da ghi de cau hinh, nap Homography ({l}m x {w}m) va tai khoi dong phan tich video "{video_display}" thanh cong!'
-                self.publish_result(command_id, action, 'completed', msg)
+            elif action == 'start_pipeline':
+                self.publish_result(command_id, action, 'completed', {'pid': 9999, 'message': 'Pipeline simulator started.'})
+
+            elif action == 'stop_pipeline':
+                self.publish_result(command_id, action, 'completed', {'message': 'Pipeline simulator stopped.'})
 
             else:
                 self.publish_result(command_id, action, 'not_implemented', 'Chua ho tro lenh: %s' % action)
