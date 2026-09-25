@@ -36,14 +36,18 @@ class MQTTService:
             print(f"[MQTT] Connecting to broker {MQTT_HOST}:{MQTT_PORT}...")
             self._client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=60)
             self._client.loop_start()
-        except Exception as e:
-            print(f"[MQTT ERROR] Connection failed: {e}")
-
-        # Start live traffic simulation thread to keep data fresh if broker is idle
-        self._thread = threading.Thread(target=self._live_simulation_loop, daemon=True)
-        self._thread.start()
+        # Kiểm tra biến ENABLE_SIMULATION: mặc định tắt để chỉ đọc dữ liệu thật từ Jetson
+        import os
+        enable_sim = os.getenv("ENABLE_SIMULATION", "false").lower() in ("true", "1", "yes")
+        if enable_sim:
+            print("[SIMULATION] Live traffic simulation is ENABLED.")
+            self._thread = threading.Thread(target=self._live_simulation_loop, daemon=True)
+            self._thread.start()
+        else:
+            print("[SIMULATION] Live traffic simulation is DISABLED. Only real node telemetry will be displayed.")
 
     def stop(self):
+
         self._stop_event.set()
         if self._client:
             self._client.loop_stop()
