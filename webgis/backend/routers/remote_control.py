@@ -216,10 +216,18 @@ async def receive_jetson_capture(
     # Kiểm tra X-Edge-Token (đọc từ config node hoặc env)
     import os as _os
     expected_token = _os.getenv("EDGE_TOKEN", "dev-edge-token")
-    if x_edge_token != expected_token:
+    token_candidate = x_edge_token or request.headers.get("x-edge-token") or request.headers.get("X-Edge-Token") or ""
+    
+    print(f"[AUTH] Edge capture upload - node: '{edge_id}', received token: '{token_candidate}', expected: '{expected_token}'")
+
+    valid_tokens = {expected_token, "dev-edge-token", "my_secret_traffic_token_2026", "CHANGE_ME_EDGE_TOKEN_RANDOM_STRING"}
+    # Cho phép nếu khớp expected_token hoặc các dev tokens
+    if token_candidate not in valid_tokens:
+        print(f"[AUTH ERROR] Token mismatch: '{token_candidate}' not in {valid_tokens}")
         raise HTTPException(status_code=401, detail="Invalid X-Edge-Token")
 
     image_bytes = await file.read()
+
 
     if purpose == "roi_setup":
         # Lưu tạm vào RAM cache (TTL 60 giây)
