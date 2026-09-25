@@ -295,11 +295,10 @@ def make_start_pipeline_handler(agent_state):
             graceful_stop_pipeline(old_proc)
             time.sleep(1.0)  # Chờ tài nguyên GPU được giải phóng hoàn toàn
 
-        # Dựng command line
+        # Dựng command line: main.py nhận --source <file_hoặc_csi> và --roi-config <path>
         cmd = [
             sys.executable,
             os.path.join(SCRIPT_DIR, 'main.py'),
-            '--source-type', source_type,
             '--source', source,
             '--roi-config', roi_config_path,
         ]
@@ -307,6 +306,7 @@ def make_start_pipeline_handler(agent_state):
             cmd.append('--no-display')
 
         _log('start_pipeline: %s' % ' '.join(cmd))
+
 
         proc = subprocess.Popen(
             cmd,
@@ -562,8 +562,15 @@ def run_agent():
                 retcode = proc.poll()
                 if retcode is not None:
                     _log('Pipeline PID=%d exited with code=%d' % (proc.pid, retcode))
+                    try:
+                        out, _ = proc.communicate(timeout=1.0)
+                        if out:
+                            _log('Pipeline output:\n%s' % out.decode('utf-8', errors='ignore')[-1500:])
+                    except Exception:
+                        pass
                     agent_state['pipeline_process'] = None
                     agent_state['pipeline_started_at'] = None
+
     except KeyboardInterrupt:
         _log('Agent shutting down...')
     finally:

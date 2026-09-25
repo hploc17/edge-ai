@@ -329,9 +329,14 @@ def main():
     parser.add_argument('--no-snapshot', action='store_true',
                         help='Disable manual/congestion snapshots')
     parser.add_argument('--no-display', action='store_true')
+    parser.add_argument('--display', action='store_true',
+                        help='Enable X11 display window')
+    parser.add_argument('--source-type', default=None,
+                        help='Source type compatibility option (file, csi, rtsp)')
     parser.add_argument('--setup', action='store_true',
                         help='Open interactive GUI to draw ROI and calibrate road dimensions')
     args = parser.parse_args()
+
 
     # Resolve all config paths to absolute paths
     args.roi_config = resolve_config_file(args.roi_config)

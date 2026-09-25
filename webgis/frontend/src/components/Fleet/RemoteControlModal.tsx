@@ -318,7 +318,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
 
   const handleStartPipeline = async () => {
     setErrorMessage("");
-    setStatusMessage("Đang gửi lệnh khởi động pipeline...");
+    setStatusMessage("Đang gửi lệnh khởi động pipeline đến Jetson...");
     try {
       await axios.post(`${API_BASE}/nodes/${edgeId}/pipeline/start`, {
         source_type: "file",
@@ -326,10 +326,13 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
         roi_config: "remote",
         display: displayMode,
       });
+      setStatusMessage("✅ Đã gửi lệnh khởi động! Jetson đang kích hoạt pipeline...");
+      setPipelineRunning(true);
     } catch (e: any) {
       setErrorMessage("Lỗi khởi động pipeline: " + e.message);
     }
   };
+
 
   const handleStopPipeline = async () => {
     setErrorMessage("");
@@ -540,13 +543,23 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                 </div>
 
                 {pipelineRunning && (
-                  <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
-                    <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                    <span className="text-[11px] text-emerald-300 font-semibold">Pipeline đang chạy</span>
+                  <div className="space-y-2 pt-1">
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
+                      <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                      <span className="text-[11px] text-emerald-300 font-semibold">AI Pipeline đang phân tích</span>
+                    </div>
+                    <button
+                      id="btn-view-map-results"
+                      onClick={onClose}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold transition shadow-lg shadow-blue-500/25"
+                    >
+                      <span>🗺️ Xem lưu lượng trên Bản đồ</span>
+                    </button>
                   </div>
                 )}
               </div>
             )}
+
 
             {/* Status / Error */}
             {statusMessage && (
