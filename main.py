@@ -77,16 +77,26 @@ from analytics.speed_estimator import (
 from communication.mqtt_client import MQTTPublisher, HeartbeatThread
 from communication.command_router import CommandHandler
 from communication.system_metrics import collect_comprehensive_health, _get_mac_address
-from config.settings import (
-    OUTBOX_DIR,
-    DEVICE_NAME,
-    ROAD_NAME,
-    GEO_LAT,
-    GEO_LNG,
-    GEO_ALTITUDE_M,
-    CAMERA_HEADING,
-    CAMERA_FOV,
-)
+try:
+    from config.settings import (
+        OUTBOX_DIR,
+        DEVICE_NAME,
+        ROAD_NAME,
+        GEO_LAT,
+        GEO_LNG,
+        GEO_ALTITUDE_M,
+        CAMERA_HEADING,
+        CAMERA_FOV,
+    )
+except (ImportError, AttributeError):
+    OUTBOX_DIR = Path(os.getenv("OUTBOX_DIR", str(SCRIPT_DIR / "outbox")))
+    DEVICE_NAME = os.getenv("DEVICE_NAME", "Nút giao Nguyễn Trãi - Khuất Duy Tiến")
+    ROAD_NAME = os.getenv("ROAD_NAME", "Nguyễn Trãi")
+    GEO_LAT = float(os.getenv("GEO_LAT", "20.998412"))
+    GEO_LNG = float(os.getenv("GEO_LNG", "105.795123"))
+    GEO_ALTITUDE_M = float(os.getenv("GEO_ALTITUDE_M", "12.5"))
+    CAMERA_HEADING = float(os.getenv("CAMERA_HEADING", "45.0"))
+    CAMERA_FOV = float(os.getenv("CAMERA_FOV", "65.0"))
 
 
 def _collect_edge_metrics(fps):

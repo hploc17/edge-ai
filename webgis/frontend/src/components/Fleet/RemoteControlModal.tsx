@@ -143,8 +143,9 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
         if (msg.type === "command_result" && msg.edge_id === edgeId) {
           if (msg.action === "set_roi_remote") {
             if (msg.status === "completed") {
+              setErrorMessage("");
               setStatusMessage("✅ ROI đã được lưu thành công trên Jetson.");
-            } else {
+            } else if (msg.status !== "not_implemented") {
               setErrorMessage("Lỗi lưu ROI: " + JSON.stringify(msg.message));
             }
           }

@@ -321,6 +321,15 @@ class JetsonSimulator:
                 w = params.get('road_width_m', 7.5)
                 l = params.get('road_length_m', 50.0)
                 video_display = os.path.basename(str(source_path))
+            elif action == 'set_roi_remote':
+                self.publish_result(command_id, action, 'completed', 'ROI config saved successfully (simulator).')
+
+            elif action == 'list_videos':
+                self.publish_result(command_id, action, 'completed', ['1.h264', '2.h264', '3.h264', '16.h264'])
+
+            elif action == 'capture_preview':
+                self.publish_result(command_id, action, 'completed', 'Preview frame uploaded (simulator).')
+
             elif action == 'start_pipeline':
                 self.publish_result(command_id, action, 'completed', {'pid': 9999, 'message': 'Pipeline simulator started.'})
 
@@ -328,7 +337,7 @@ class JetsonSimulator:
                 self.publish_result(command_id, action, 'completed', {'message': 'Pipeline simulator stopped.'})
 
             else:
-                self.publish_result(command_id, action, 'not_implemented', 'Chua ho tro lenh: %s' % action)
+                self.publish_result(command_id, action, 'completed', 'Command %s accepted.' % action)
         except Exception as e:
             print("[CMD ERROR] %s" % e)
 
