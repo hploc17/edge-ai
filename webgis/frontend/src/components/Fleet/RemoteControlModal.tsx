@@ -43,6 +43,10 @@ interface RemoteControlModalProps {
   edgeId: string;
   nodeName: string;
   onClose: () => void;
+  /** Khi true: modal ẩn đi, chỉ hiển thị floating chip */
+  isMinimized?: boolean;
+  onMinimize?: () => void;
+  onRestore?: () => void;
   wsRef?: React.RefObject<WebSocket | null>;
 }
 
@@ -106,6 +110,9 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
   edgeId,
   nodeName,
   onClose,
+  isMinimized = false,
+  onMinimize,
+  onRestore,
 }) => {
   const [stage, setStage] = useState<Stage>("idle");
   const [videos, setVideos] = useState<string[]>([]);
@@ -160,7 +167,8 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
           }
           if (msg.action === "stop_pipeline") {
             setPipelineRunning(false);
-            setStatusMessage("✅ Pipeline đã dừng.");
+            const stopMsg = typeof msg.message === "string" ? msg.message : "✅ Pipeline đã kết thúc/dừng.";
+            setStatusMessage(stopMsg);
           }
           if (msg.action === "list_videos" && msg.status === "completed") {
             const vids = Array.isArray(msg.message) ? msg.message : [];
@@ -355,44 +363,103 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
   const isLoadingPreview = stage === "loading_preview";
   const isPipelineStage = stage === "pipeline_control";
 
+  // ── Khi đang minimize: hiển thị floating chip ──────────────────────────────
+  if (isMinimized) {
+    return (
+      <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-slate-900 border border-slate-700 shadow-2xl text-white animate-fade-in">
+        <div className={`w-2 h-2 rounded-full ${pipelineRunning ? "bg-emerald-400 animate-pulse" : "bg-slate-400"}`} />
+        <div className="text-xs">
+          <span className="font-bold">{nodeName}</span>
+          <span className="ml-1 text-slate-400">{pipelineRunning ? "· AI đang chạy" : "· Chờ"}</span>
+        </div>
+        {pipelineRunning && (
+          <button
+            onClick={handleStopPipeline}
+            className="px-2 py-1 bg-red-600 hover:bg-red-700 rounded-lg text-[10px] font-bold transition"
+          >
+            Dừng
+          </button>
+        )}
+        <button
+          onClick={onRestore}
+          className="px-2.5 py-1 bg-slate-700 hover:bg-slate-600 rounded-lg text-[10px] font-semibold transition"
+        >
+          Mở
+        </button>
+        <button
+          onClick={onClose}
+          className="p-1 text-slate-400 hover:text-white transition"
+          title="Đóng hoàn toàn"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="relative w-full max-w-5xl max-h-[95vh] flex flex-col bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-3 sm:p-6 animate-fade-in">
+      <div className="relative w-full max-w-5xl max-h-[92vh] flex flex-col bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3.5 bg-slate-800 border-b border-slate-700 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-blue-600/20 border border-blue-500/40">
-              <Monitor className="w-5 h-5 text-blue-400" />
+        <div className="flex items-center justify-between px-6 py-4 bg-white border-b border-slate-200 shrink-0">
+          <div className="flex items-center gap-3.5">
+            <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600 shadow-xs">
+              <Monitor className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-sm font-bold text-white">Điều khiển Jetson từ xa</h2>
-              <p className="text-[11px] text-slate-400 font-mono">
+              <div className="flex items-center gap-2.5">
+                <h2 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">Điều khiển Jetson từ xa</h2>
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                  Remote Control
+                </span>
+                {pipelineRunning && (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> LIVE
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 font-mono mt-0.5 font-medium">
                 {edgeId} · {nodeName}{requestId ? ` · ID: ${requestId.slice(0, 8)}` : ""}
               </p>
-
             </div>
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition">
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1">
+            {/* Minimize button */}
+            {onMinimize && (
+              <button
+                onClick={onMinimize}
+                className="p-2 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-100 transition-colors"
+                title="Thu nhỏ — giữ nguyên trạng thái"
+              >
+                <span className="w-5 h-5 flex items-center justify-center text-lg font-bold leading-none">─</span>
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="p-2 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-100 transition-colors"
+              title="Đóng modal"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         <div className="flex flex-1 overflow-hidden">
           {/* Left Panel: Controls */}
-          <div className="w-72 flex flex-col gap-4 p-4 bg-slate-850 border-r border-slate-700 overflow-y-auto shrink-0">
+          <div className="w-80 flex flex-col gap-4 p-4 bg-slate-50 border-r border-slate-200 overflow-y-auto shrink-0">
 
             {/* Step 1: Danh sách video */}
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 text-xs font-bold text-slate-300 uppercase tracking-wide">
-                <Video className="w-3.5 h-3.5 text-blue-400" />
+            <div className="space-y-2 bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-700 uppercase tracking-wide">
+                <Video className="w-3.5 h-3.5 text-blue-600" />
                 <span>Bước 1 · Chọn nguồn video</span>
               </div>
               <button
                 id="btn-load-videos"
                 onClick={handleLoadVideos}
                 disabled={isLoadingVideos}
-                className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold transition"
+                className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold shadow-xs transition"
               >
                 {isLoadingVideos ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
                 Tải danh sách video
@@ -402,7 +469,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                 <div className="relative">
                   <select
                     id="select-video"
-                    className="w-full pl-3 pr-8 py-2 text-xs rounded-xl bg-slate-700 border border-slate-600 text-white appearance-none focus:outline-none focus:border-blue-500"
+                    className="w-full pl-3 pr-8 py-2 text-xs rounded-xl bg-white border border-slate-300 text-slate-800 appearance-none focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 shadow-xs font-medium"
                     value={selectedVideo}
                     onChange={(e) => setSelectedVideo(e.target.value)}
                   >
@@ -417,16 +484,16 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
             </div>
 
             {/* Step 2: Preview */}
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 text-xs font-bold text-slate-300 uppercase tracking-wide">
-                <Camera className="w-3.5 h-3.5 text-orange-400" />
+            <div className="space-y-2 bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-700 uppercase tracking-wide">
+                <Camera className="w-3.5 h-3.5 text-amber-600" />
                 <span>Bước 2 · Lấy khung hình</span>
               </div>
               <button
                 id="btn-get-preview"
                 onClick={handleGetPreview}
                 disabled={!selectedVideo || isLoadingPreview}
-                className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-orange-600 hover:bg-orange-500 disabled:opacity-40 text-white text-xs font-bold transition"
+                className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-40 text-white text-xs font-bold shadow-xs transition"
               >
                 {isLoadingPreview ? <Loader2 className="w-4 h-4 animate-spin" /> : <ZoomIn className="w-4 h-4" />}
                 Lấy khung hình preview
@@ -435,32 +502,32 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
 
             {/* Step 3: Vẽ ROI */}
             {isCanvasActive && (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-xs font-bold text-slate-300 uppercase tracking-wide">
-                  <div className="w-3.5 h-3.5 rounded-sm border-2 border-orange-400" />
+              <div className="space-y-2 bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-700 uppercase tracking-wide">
+                  <div className="w-3.5 h-3.5 rounded-sm border-2 border-orange-500" />
                   <span>Bước 3 · Vẽ ROI</span>
                 </div>
-                <p className="text-[10px] text-slate-500">Chuột trái: thêm điểm · Chuột phải: xóa điểm cuối</p>
+                <p className="text-[10px] text-slate-500 font-medium">Chuột trái: thêm điểm · Chuột phải: xóa điểm cuối</p>
 
                 {(["detection", "analysis"] as DrawMode[]).map((mode) => {
                   const col = COLORS[mode!];
                   const pts = mode === "detection" ? roiConfig.detectionRoi : roiConfig.analysisRoi;
                   const isActive = drawMode === mode;
                   return (
-                    <div key={mode} className="rounded-xl border overflow-hidden" style={{ borderColor: col.stroke + "66" }}>
+                    <div key={mode} className="rounded-xl border overflow-hidden bg-slate-50" style={{ borderColor: col.stroke + "66" }}>
                       <button
                         id={`btn-draw-${mode}`}
                         onClick={() => { setDrawMode(isActive ? null : mode); setStage("drawing"); }}
                         className="w-full flex items-center justify-between px-3 py-2 text-xs font-bold transition"
-                        style={{ backgroundColor: isActive ? col.stroke + "33" : "transparent", color: col.stroke }}
+                        style={{ backgroundColor: isActive ? col.stroke + "20" : "transparent", color: col.stroke }}
                       >
                         <span>{mode === "detection" ? "DETECTION ROI" : "ANALYSIS ROI"}</span>
-                        <span className="font-mono text-[10px] bg-black/30 px-1.5 py-0.5 rounded">{pts.length} điểm</span>
+                        <span className="font-mono text-[10px] bg-white border border-slate-200 text-slate-700 px-1.5 py-0.5 rounded shadow-2xs font-semibold">{pts.length} điểm</span>
                       </button>
                       {pts.length > 0 && (
                         <button
                           onClick={() => setRoiConfig((prev) => mode === "detection" ? { ...prev, detectionRoi: [] } : { ...prev, analysisRoi: [] })}
-                          className="w-full flex items-center gap-1 px-3 py-1 text-[10px] text-red-400 hover:bg-red-500/10 transition"
+                          className="w-full flex items-center gap-1 px-3 py-1 text-[10px] text-red-600 hover:bg-red-50 transition border-t border-slate-200"
                         >
                           <Trash2 className="w-3 h-3" /> Xóa điểm
                         </button>
@@ -470,21 +537,21 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                 })}
 
                 {/* Thông số đường */}
-                <div className="space-y-2 pt-1">
+                <div className="space-y-2 pt-1 border-t border-slate-100">
                   {[
                     { label: "Chiều rộng (m)", key: "roadWidthM", step: 0.5, min: 1 },
                     { label: "Chiều dài (m)", key: "roadLengthM", step: 1, min: 5 },
                     { label: "Số làn xe", key: "laneCount", step: 1, min: 1 },
                   ].map(({ label, key, step, min }) => (
                     <div key={key}>
-                      <label className="block text-[10px] text-slate-400 mb-1">{label}</label>
+                      <label className="block text-[10px] font-semibold text-slate-600 mb-1">{label}</label>
                       <input
                         type="number"
                         step={step}
                         min={min}
                         value={(roiConfig as any)[key]}
                         onChange={(e) => setRoiConfig((prev) => ({ ...prev, [key]: parseFloat(e.target.value) || 0 }))}
-                        className="w-full px-3 py-1.5 text-xs rounded-lg bg-slate-700 border border-slate-600 text-white focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-1.5 text-xs rounded-lg bg-white border border-slate-300 text-slate-800 shadow-xs focus:outline-none focus:border-blue-500 font-medium"
                       />
                     </div>
                   ))}
@@ -494,7 +561,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                   id="btn-save-roi"
                   onClick={handleSaveRoi}
                   disabled={roiConfig.detectionRoi.length < 3 || roiConfig.analysisRoi.length < 3 || isSavingRoi}
-                  className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-bold transition"
+                  className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-bold shadow-xs transition"
                 >
                   {isSavingRoi ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                   Lưu cấu hình ROI
@@ -504,9 +571,9 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
 
             {/* Step 4: Pipeline */}
             {isPipelineStage && (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-xs font-bold text-slate-300 uppercase tracking-wide">
-                  <Play className="w-3.5 h-3.5 text-emerald-400" />
+              <div className="space-y-2 bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-700 uppercase tracking-wide">
+                  <Play className="w-3.5 h-3.5 text-emerald-600" />
                   <span>Bước 4 · Pipeline</span>
                 </div>
 
@@ -514,13 +581,13 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                 <button
                   id="btn-toggle-display"
                   onClick={() => setDisplayMode((v) => !v)}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl border text-xs font-semibold transition ${displayMode ? "bg-yellow-500/20 border-yellow-500/50 text-yellow-300" : "bg-slate-700 border-slate-600 text-slate-300"}`}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl border text-xs font-semibold transition ${displayMode ? "bg-amber-50 border-amber-300 text-amber-800" : "bg-slate-50 border-slate-300 text-slate-700 hover:bg-slate-100"}`}
                 >
                   <span className="flex items-center gap-2">
-                    {displayMode ? <Monitor className="w-4 h-4" /> : <MonitorOff className="w-4 h-4" />}
+                    {displayMode ? <Monitor className="w-4 h-4 text-amber-600" /> : <MonitorOff className="w-4 h-4 text-slate-500" />}
                     {displayMode ? "Bật màn hình Jetson" : "Tắt màn hình (sản xuất)"}
                   </span>
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${displayMode ? "bg-yellow-500 text-black" : "bg-slate-600 text-slate-300"}`}>
+                  <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${displayMode ? "bg-amber-500 text-white" : "bg-slate-200 text-slate-600"}`}>
                     {displayMode ? "ON" : "OFF"}
                   </span>
                 </button>
@@ -530,7 +597,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                     id="btn-start-pipeline"
                     onClick={handleStartPipeline}
                     disabled={pipelineRunning}
-                    className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-bold transition"
+                    className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-bold shadow-xs transition"
                   >
                     <Play className="w-4 h-4" /> Chạy
                   </button>
@@ -538,7 +605,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                     id="btn-stop-pipeline"
                     onClick={handleStopPipeline}
                     disabled={!pipelineRunning}
-                    className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white text-xs font-bold transition"
+                    className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-bold shadow-xs transition"
                   >
                     <Square className="w-4 h-4" /> Dừng
                   </button>
@@ -546,14 +613,14 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
 
                 {pipelineRunning && (
                   <div className="space-y-2 pt-1">
-                    <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
-                      <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                      <span className="text-[11px] text-emerald-300 font-semibold">AI Pipeline đang phân tích</span>
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-200">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                      <span className="text-[11px] text-emerald-800 font-semibold">AI Pipeline đang phân tích</span>
                     </div>
                     <button
                       id="btn-view-map-results"
-                      onClick={onClose}
-                      className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold transition shadow-lg shadow-blue-500/25"
+                      onClick={onMinimize ? onMinimize : onClose}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition shadow-md shadow-blue-500/20"
                     >
                       <span>🗺️ Xem lưu lượng trên Bản đồ</span>
                     </button>
@@ -562,31 +629,30 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
               </div>
             )}
 
-
             {/* Status / Error */}
             {statusMessage && (
-              <div className="flex items-start gap-2 px-3 py-2 rounded-xl bg-blue-500/10 border border-blue-500/30">
-                <CheckCircle className="w-3.5 h-3.5 text-blue-400 mt-0.5 shrink-0" />
-                <p className="text-[11px] text-blue-300">{statusMessage}</p>
+              <div className="flex items-start gap-2 px-3 py-2 rounded-xl bg-blue-50 border border-blue-200 shadow-xs">
+                <CheckCircle className="w-3.5 h-3.5 text-blue-600 mt-0.5 shrink-0" />
+                <p className="text-[11px] text-blue-800 font-medium">{statusMessage}</p>
               </div>
             )}
             {errorMessage && (
-              <div className="px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/30">
-                <p className="text-[11px] text-red-300">{errorMessage}</p>
+              <div className="px-3 py-2 rounded-xl bg-red-50 border border-red-200 shadow-xs">
+                <p className="text-[11px] text-red-800 font-medium">{errorMessage}</p>
               </div>
             )}
           </div>
 
           {/* Right Panel: Canvas */}
-          <div className="flex-1 flex items-center justify-center bg-slate-950 relative overflow-hidden">
+          <div className="flex-1 flex items-center justify-center bg-slate-950 relative overflow-hidden select-none">
             {!previewImage ? (
-              <div className="text-center text-slate-600 space-y-3">
-                <Camera className="w-16 h-16 mx-auto opacity-30" />
-                <p className="text-sm font-medium">Chưa có khung hình</p>
-                <p className="text-[11px]">Chọn video và bấm "Lấy khung hình preview"</p>
+              <div className="text-center text-slate-500 space-y-3 p-8">
+                <Camera className="w-16 h-16 mx-auto text-slate-600 stroke-[1.2]" />
+                <p className="text-sm font-semibold text-slate-300">Chưa có khung hình</p>
+                <p className="text-xs text-slate-400">Chọn video ở cột bên trái và bấm "Lấy khung hình preview"</p>
               </div>
             ) : (
-              <div className="relative w-full h-full flex items-center justify-center p-2">
+              <div className="relative w-full h-full flex items-center justify-center p-3">
                 {/* Hidden image dùng để vẽ lên canvas */}
                 <img
                   ref={imgRef}
@@ -599,13 +665,13 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                   ref={canvasRef}
                   onClick={handleCanvasClick}
                   onContextMenu={handleCanvasRightClick}
-                  className="max-w-full max-h-full rounded-xl border border-slate-700 shadow-lg"
+                  className="max-w-full max-h-full rounded-xl border border-slate-700 shadow-2xl"
                   style={{ cursor: drawMode ? "crosshair" : "default" }}
                 />
                 {drawMode && (
-                  <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full text-xs font-bold text-white shadow-lg"
+                  <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full text-xs font-bold text-white shadow-xl backdrop-blur-md"
                     style={{ backgroundColor: COLORS[drawMode].stroke }}>
-                    Đang vẽ {drawMode.toUpperCase()} ROI · Chuột trái: thêm · Chuột phải: xóa
+                    Đang vẽ {drawMode.toUpperCase()} ROI · Chuột trái: thêm điểm · Chuột phải: xóa
                   </div>
                 )}
               </div>

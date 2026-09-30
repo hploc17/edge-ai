@@ -8,6 +8,8 @@ import { CongestionHistoryModal } from "./components/History/CongestionHistoryMo
 import { NodeManagementPanel } from "./components/Fleet/NodeManagementPanel";
 import { AddNodeModal } from "./components/Fleet/AddNodeModal";
 import { RemoteControlModal } from "./components/Fleet/RemoteControlModal";
+import { CameraViewModal } from "./components/Camera/CameraViewModal";
+import { PendingNodeApprovalModal } from "./components/Fleet/PendingNodeApprovalModal";
 import type { GeoJSONFeatureCollection, NodeDetail, SummaryKPIs, HistoryRecord } from "./types/gis";
 import { api } from "./services/api";
 import { wsService } from "./services/websocket";
@@ -39,9 +41,18 @@ export const App: React.FC = () => {
   const [isFleetOpen, setIsFleetOpen] = useState(false);
   const [isAddNodeOpen, setIsAddNodeOpen] = useState(false);
   const [remoteNode, setRemoteNode] = useState<NodeDetail | null>(null);
+  const [isRemoteMinimized, setIsRemoteMinimized] = useState(false);
+  const [cameraModalNode, setCameraModalNode] = useState<NodeDetail | null>(null);
+
+  // Pending Node Approval
+  const [pendingCount, setPendingCount] = useState(0);
+  const [isPendingApprovalOpen, setIsPendingApprovalOpen] = useState(false);
+  // edge_id của node đang đợi Admin pick vị trí trên bản đồ
+  const [pickingForPendingNode, setPickingForPendingNode] = useState<string | null>(null);
 
 
   // Coordinate Picking on Map
+  // pickedCoords dùng cho cả AddNodeModal và PendingNodeApprovalModal
   const [isPickingLocation, setIsPickingLocation] = useState(false);
   const [pickedCoords, setPickedCoords] = useState<{ lng: number; lat: number } | null>(null);
 
@@ -174,6 +185,21 @@ export const App: React.FC = () => {
         setNodesList((prev) =>
           prev.map((n) => (n.edge_id === edgeId ? { ...n, status, last_seen: msg.last_seen } : n))
         );
+      } else if (msg.type === "device_pending") {
+        // Thiết bị Jetson mới kết nối chưa qua approval
+        setPendingCount(msg.pending_count ?? 1);
+      } else if (msg.type === "node_deleted") {
+        // Xóa node khỏi bản đồ
+        const deletedId = msg.edge_id;
+        setNodesGeoJSON((prev) => {
+          if (!prev) return prev;
+          return { ...prev, features: prev.features.filter(f => f.properties.edge_id !== deletedId) };
+        });
+        setNodesList((prev) => prev.filter(n => n.edge_id !== deletedId));
+        if (selectedNodeId === deletedId) {
+          setSelectedNodeId(null);
+          setSelectedNodeDetail(null);
+        }
       } else if (msg.type === "node_registered") {
         const rawNode = msg.node || {};
         const edgeId = msg.edge_id || rawNode.edge_id;
@@ -265,6 +291,50 @@ export const App: React.FC = () => {
             features: [...prev.features, newFeature]
           };
         });
+      } else if (msg.type === "snapshot_updated") {
+        const edgeId = msg.edge_id;
+        const snapshotUrl = msg.snapshot_url;
+
+        // Cập nhật snapshot_url trong danh sách nodes
+        setNodesList((prev) =>
+          prev.map((n) =>
+            n.edge_id === edgeId
+              ? { ...n, snapshot_url: snapshotUrl, last_seen: new Date().toISOString() }
+              : n
+          )
+        );
+
+        // Cập nhật snapshot_url trong chi tiết Node đang mở ở Drawer
+        setSelectedNodeDetail((prev) => {
+          if (!prev || prev.edge_id !== edgeId) return prev;
+          return { ...prev, snapshot_url: snapshotUrl, last_seen: new Date().toISOString() };
+        });
+
+        // Cập nhật cameraModalNode nếu đang mở modal của node này
+        setCameraModalNode((prev) => {
+          if (!prev || prev.edge_id !== edgeId) return prev;
+          return { ...prev, snapshot_url: snapshotUrl, last_seen: new Date().toISOString() };
+        });
+
+        // Cập nhật snapshot_url trong thuộc tính GeoJSON Feature
+        setNodesGeoJSON((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            features: prev.features.map((f) =>
+              f.properties.edge_id === edgeId
+                ? {
+                    ...f,
+                    properties: {
+                      ...f.properties,
+                      snapshot_url: snapshotUrl,
+                      last_seen: new Date().toISOString()
+                    }
+                  }
+                : f
+            )
+          };
+        });
       }
     });
 
@@ -319,7 +389,12 @@ export const App: React.FC = () => {
   const handleLocationPicked = (lng: number, lat: number) => {
     setPickedCoords({ lng, lat });
     setIsPickingLocation(false);
-    setIsAddNodeOpen(true);
+    // Nếu đang pick cho pending node, mở lại PendingApprovalModal
+    if (pickingForPendingNode) {
+      setIsPendingApprovalOpen(true);
+    } else {
+      setIsAddNodeOpen(true);
+    }
   };
 
   return (
@@ -327,12 +402,14 @@ export const App: React.FC = () => {
       {/* Top Floating Navbar */}
       <Navbar
         kpis={kpis}
+        pendingCount={pendingCount}
         onOpenHistory={() => {
           setHistorySegmentId("segment-001");
           setIsHistoryOpen(true);
         }}
         onOpenFleet={() => setIsFleetOpen(true)}
         onOpenAddNode={() => setIsAddNodeOpen(true)}
+        onOpenPendingApproval={() => setIsPendingApprovalOpen(true)}
       />
 
       {/* Layer Control Menu */}
@@ -384,14 +461,28 @@ export const App: React.FC = () => {
           setIsHistoryOpen(true);
         }}
         onOpenRemote={() => setRemoteNode(selectedNodeDetail)}
+        onOpenCamera={() => setCameraModalNode(selectedNodeDetail)}
       />
 
-      {/* Remote Control & ROI Setup Modal (khi mở từ Drawer hoặc Map) */}
+      {/* Camera Live View & On-Demand Snapshot Modal */}
+      <CameraViewModal
+        isOpen={!!cameraModalNode}
+        onClose={() => setCameraModalNode(null)}
+        node={cameraModalNode}
+      />
+
+      {/* Remote Control & ROI Setup Modal — hỗ trợ Minimize */}
       {remoteNode && (
         <RemoteControlModal
           edgeId={remoteNode.edge_id}
           nodeName={remoteNode.name}
-          onClose={() => setRemoteNode(null)}
+          isMinimized={isRemoteMinimized}
+          onMinimize={() => setIsRemoteMinimized(true)}
+          onRestore={() => setIsRemoteMinimized(false)}
+          onClose={() => {
+            setRemoteNode(null);
+            setIsRemoteMinimized(false);
+          }}
         />
       )}
 
@@ -429,6 +520,8 @@ export const App: React.FC = () => {
             setIsAddNodeOpen(true);
           }}
           onRefreshNodes={fetchAllData}
+          onOpenCamera={(node) => setCameraModalNode(node)}
+          onOpenRemote={(node) => setRemoteNode(node)}
         />
       )}
 
@@ -440,7 +533,32 @@ export const App: React.FC = () => {
           pickedCoords={pickedCoords}
           onEnablePickMode={() => {
             setIsAddNodeOpen(false);
+            setPickingForPendingNode(null);
             setIsPickingLocation(true);
+          }}
+        />
+      )}
+
+      {/* Pending Node Approval Modal */}
+      {isPendingApprovalOpen && (
+        <PendingNodeApprovalModal
+          onClose={() => {
+            setIsPendingApprovalOpen(false);
+            setPickingForPendingNode(null);
+            setPickedCoords(null);
+          }}
+          onEnablePickMode={(edgeId) => {
+            setPickingForPendingNode(edgeId);
+            setIsPendingApprovalOpen(false);
+            setIsPickingLocation(true);
+          }}
+          pickedCoords={pickingForPendingNode && pickedCoords
+            ? { lat: pickedCoords.lat, lng: pickedCoords.lng }
+            : null
+          }
+          onNodeApproved={() => {
+            fetchAllData();
+            setPendingCount(prev => Math.max(0, prev - 1));
           }}
         />
       )}

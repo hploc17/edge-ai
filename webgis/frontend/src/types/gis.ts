@@ -53,10 +53,13 @@ export interface NodeDetail extends NodeProperties {
   stopped_vehicle_count?: number;
   density_veh_per_km_lane?: number;
   counts_by_class?: {
-    motorcycle?: number;
+    motorcycle?: number;  // Chuẩn WebGIS (sau khi normalize ở backend)
+    motorbike?: number;   // Raw Jetson/YOLO COCO label (fallback)
     car?: number;
     bus?: number;
     truck?: number;
+    bicycle?: number;
+    [key: string]: number | undefined; // Hỗ trợ các lớp tuùy chỉnh khác
   };
   latest_health?: DeviceHealthData;
   snapshot_url?: string;
@@ -135,4 +138,42 @@ export interface CongestionSnapshot {
   avg_speed_kmh: number;
   vehicle_count: number;
   image_url: string;
+}
+
+/** Thiết bị Jetson đã kết nối MQTT nhưng chưa được Admin phê duyệt vị trí */
+export interface PendingNodeInfo {
+  edge_id: string;
+  name: string;
+  camera_id?: string;
+  model_version?: string;
+  segment_id?: string;
+  /** Có thể null nếu Jetson chưa gắn GPS */
+  latitude?: number | null;
+  longitude?: number | null;
+  road_name?: string | null;
+  camera_heading?: number | null;
+  camera_fov?: number | null;
+  first_seen: string;
+  last_seen: string;
+  status: "pending";
+  raw_payload?: Record<string, unknown>;
+}
+
+/** Kết quả tra cứu thông số đường từ OpenStreetMap */
+export interface OSMRoadInfo {
+  found: boolean;
+  osm_way_id?: number;
+  road_name?: string;
+  road_type?: string;
+  lanes?: number;
+  speed_limit_kmh?: number;
+  road_length_m?: number;
+  road_width_m?: number;
+  width_estimated?: boolean;
+  surface?: string;
+  oneway?: boolean;
+  /** Danh sách tọa độ [[lng, lat], ...] để vẽ LineString heatmap thực tế */
+  coordinates?: [number, number][];
+  raw_tags?: Record<string, string>;
+  message?: string;
 }

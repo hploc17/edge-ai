@@ -8,14 +8,10 @@ echo "========================================================"
 echo "  KHOI DONG HE THONG EDGE TRAFFIC AI (NVIDIA JETSON NANO)"
 echo "========================================================"
 
-# 1. Cho phep cac tien trinh tu Docker truy cap vao X-server (neu co)
-export DISPLAY="${DISPLAY:-}"
-if [ -n "${DISPLAY}" ]; then
-    echo "[*] Dang cap quyen truy cap X-server cho Docker (DISPLAY=${DISPLAY})..."
-    xhost +local:root >/dev/null 2>&1 || xhost + >/dev/null 2>&1 || true
-else
-    echo "[*] Che do Headless (khong co bien DISPLAY)..."
-fi
+# 1. Cho phep cac tien trinh tu Docker truy cap vao X-server de khoi tao Tegra EGL
+export DISPLAY="${DISPLAY:-:0}"
+echo "[*] Dang cap quyen truy cap X-server cho Docker (DISPLAY=${DISPLAY})..."
+xhost +local:root >/dev/null 2>&1 || xhost +local:docker >/dev/null 2>&1 || xhost + >/dev/null 2>&1 || true
 
 # 2. Dam bao dich vu camera daemon dang chay
 if systemctl is-active --quiet nvargus-daemon 2>/dev/null; then
@@ -28,19 +24,10 @@ fi
 # 3. Tao thu muc outbox ngoai host neu chua co
 mkdir -p "$DIR/outbox"
 
-# 4. Kiem tra Docker Image: Uu tien image san co tren may
-if [ -z "${IMAGE_NAME}" ]; then
-    if docker image inspect "jetson-traffic-ai-deepstream:latest" >/dev/null 2>&1; then
-        IMAGE_NAME="jetson-traffic-ai-deepstream:latest"
-    elif docker image inspect "jetson-deepstream-edge:latest" >/dev/null 2>&1; then
-        IMAGE_NAME="jetson-deepstream-edge:latest"
-    elif docker image inspect "traffic-edge-nano:latest" >/dev/null 2>&1; then
-        IMAGE_NAME="traffic-edge-nano:latest"
-    else
-        IMAGE_NAME="traffic-edge-nano:latest"
-    fi
-fi
-
+# 4. Kiem tra Docker Image:
+#    Mac dinh build tu Dockerfile cua chinh optimal nay (traffic-edge-nano:latest)
+#    Neu IMAGE_NAME duoc ghi de bang bien moi truong, dung image do.
+IMAGE_NAME="${IMAGE_NAME:-traffic-edge-nano:latest}"
 if ! docker image inspect "${IMAGE_NAME}" >/dev/null 2>&1; then
     echo "[*] Image '${IMAGE_NAME}' chua ton tai. Dang build tu Dockerfile..."
     docker build -t "${IMAGE_NAME}" -f "$DIR/Dockerfile" "$DIR"
@@ -102,7 +89,19 @@ if [ "$1" == "-it" ] || [ "$1" == "bash" ] || [ "$1" == "--interactive" ]; then
       "$IMAGE_NAME" \
       $CMD
 else
+    APP_CMD="python3 /app/communication/jetson_agent.py"
+    if [ "$1" == "agent" ] || [ "$1" == "--agent" ]; then
+        shift || true
+        APP_CMD="python3 /app/communication/jetson_agent.py"
+    elif [ "$1" == "pipeline" ]; then
+        shift || true
+        APP_CMD="python3 /app/main.py ${*:-"--source csi --sensor-id 0"}"
+    elif [ -n "$1" ]; then
+        APP_CMD="$*"
+    fi
+
     echo "[*] Dang chay Docker Container ngam: $CONTAINER_NAME..."
+    echo "[*] Lenh thuc thi trong container: $APP_CMD"
     docker run -d \
       --name "$CONTAINER_NAME" \
       --runtime nvidia \
@@ -126,7 +125,7 @@ else
       -w /app \
       ${ENV_FILE_ARG} \
       "$IMAGE_NAME" \
-      python3 /app/main.py --source csi --sensor-id 0
+      $APP_CMD
 
     echo "[OK] Container da khoi chay ngam thanh cong!"
     echo "-> Xem log truc tiep: ./view_log.sh"

@@ -416,19 +416,39 @@ class SnapshotCoordinator(object):
 
     def _try_upload(self, key):
         row = self._store.get(key)
+        if not row:
+            return False
         payload, command = row["payload"], row["payload"].get("command_id")
+        file_path = self._store.path(key)
+        if not os.path.isfile(file_path):
+            LOG.warning("Snapshot file missing for %s; marking failed", key)
+            self._store.finish(key, "failed", dict(status="failed", message="FILE_NOT_FOUND"))
+            return False
+
         try:
-            with open(self._store.path(key), "rb") as stream:
-                jpeg = validate_jpeg(stream.read(self.max_jpeg + 1), self.max_jpeg)
+            with open(file_path, "rb") as stream:
+                jpeg_data = stream.read(self.max_jpeg + 1)
+            jpeg = validate_jpeg(jpeg_data, self.max_jpeg)
+        except ValueError as val_err:
+            LOG.warning("Corrupted JPEG for %s (%s); removing from outbox", key, val_err)
+            self._store.finish(key, "failed", dict(status="failed", message=str(val_err)))
+            self._store.remove_image(key)
+            self._emit(command, "failed", str(val_err))
+            return False
+
+        try:
             result = self._uploader(payload, jpeg)
             url = result.get("snapshot_url", "") if isinstance(result, dict) else ""
-            expected = "/api/v1/snapshots/" + key + "/image"
-            if not isinstance(result, dict) or result.get("success") is not True or url != expected:
-                raise ValueError("Unconfirmed upload response")
+            is_confirmed = isinstance(result, dict) and (
+                result.get("success") is True or
+                result.get("status") in ("success", "ok")
+            ) and bool(url)
+            if not is_confirmed:
+                raise ValueError("Unconfirmed upload response: %s" % result)
         except Exception as error:
             self._store.defer(key, self.retry)
             self._emit(command, "queued", "JPEG_SAVED_WAITING_FOR_BACKEND")
-            LOG.warning("Upload pending (%s); JPEG retained", type(error).__name__)
+            LOG.warning("Upload pending (%s: %s); JPEG retained", type(error).__name__, error)
             return False
         completed = dict(status="completed", message="Snapshot uploaded", snapshot_id=key, snapshot_url=url)
         self._store.finish(key, "complete", completed)

@@ -61,11 +61,23 @@ TOPIC_COMMAND = 'traffic/%s/command' % EDGE_ID
 TOPIC_COMMAND_RESULT = 'traffic/%s/command-result' % EDGE_ID
 
 # ── HiveMQ Cloud connection (read from env, fallback to mqtt_client.py values)
-MQTT_HOST = os.getenv('MQTT_HOST', '829e7cb26c594257a7470e5a5af58064.s1.eu.hivemq.cloud')
-MQTT_PORT = int(os.getenv('MQTT_PORT', '8883'))
+def _parse_port(val, default=8883):
+    try:
+        if isinstance(val, str):
+            val = val.strip().strip("'\"").rstrip('\r\n')
+            import re
+            m = re.search(r'\d+', val)
+            if m:
+                return int(m.group(0))
+        return int(val)
+    except Exception:
+        return default
+
+MQTT_PORT = _parse_port(os.getenv('MQTT_PORT', '8883'), 8883)
 MQTT_USERNAME = os.getenv('MQTT_USER', 'admin')
-MQTT_PASSWORD = os.getenv('MQTT_PASS', '12345678')
-MQTT_CLIENT_ID = os.getenv('MQTT_CLIENT_ID', '%s-edge-pub' % EDGE_ID)
+MQTT_CLIENT_ID = os.getenv('MQTT_CLIENT_ID')
+if not MQTT_CLIENT_ID:
+    MQTT_CLIENT_ID = '%s-edge-pub-%s' % (EDGE_ID, uuid.uuid4().hex[:6])
 
 HEARTBEAT_INTERVAL_S = 5.0
 TELEMETRY_INTERVAL_S = 1.0
@@ -90,7 +102,7 @@ class MQTTPublisher(object):
 
         self._client = mqtt_lib.Client(
             client_id=MQTT_CLIENT_ID,
-            clean_session=False,
+            clean_session=True,
         )
         self._client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
         self._client.tls_set(
@@ -265,6 +277,9 @@ class MQTTPublisher(object):
             return
 
         if self._command_callback is not None:
+            cmd_action = data.get('action') if isinstance(data, dict) else 'unknown'
+            cmd_id = data.get('command_id', '') if isinstance(data, dict) else ''
+            print('[MQTT] Received command: %s (id=%s)' % (cmd_action, cmd_id))
             try:
                 self._command_callback(data)
             except Exception as err:

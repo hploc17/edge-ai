@@ -30,6 +30,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 # Đường dẫn gốc của project (thư mục chứa main.py)
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -295,10 +296,11 @@ def make_start_pipeline_handler(agent_state):
             graceful_stop_pipeline(old_proc)
             time.sleep(1.0)  # Chờ tài nguyên GPU được giải phóng hoàn toàn
 
-        # Dựng command line: main.py nhận --source <file_hoặc_csi> và --roi-config <path>
+        # Dựng command line: tự động nhận diện main3.py nếu có, ngược lại dùng main.py
+        worker_script = 'main3.py' if os.path.exists(os.path.join(SCRIPT_DIR, 'main3.py')) else 'main.py'
         cmd = [
             sys.executable,
-            os.path.join(SCRIPT_DIR, 'main.py'),
+            os.path.join(SCRIPT_DIR, worker_script),
             '--source', source,
             '--roi-config', roi_config_path,
         ]
@@ -307,17 +309,24 @@ def make_start_pipeline_handler(agent_state):
 
         _log('start_pipeline: %s' % ' '.join(cmd))
 
+        env = os.environ.copy()
+        if not env.get('DISPLAY'):
+            env['DISPLAY'] = ':0'
 
+        log_file_path = os.path.join(SCRIPT_DIR, 'pipeline.log')
+        log_f = open(log_file_path, 'a', encoding='utf-8')
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
+            stdout=log_f,
             stderr=subprocess.STDOUT,
             cwd=SCRIPT_DIR,
+            env=env,
         )
 
         agent_state['pipeline_process'] = proc
+        agent_state['pipeline_log_file'] = log_f
         agent_state['pipeline_started_at'] = time.time()
-        _log('start_pipeline: started PID=%d' % proc.pid)
+        _log('start_pipeline: started PID=%d (logging to %s)' % (proc.pid, log_file_path))
 
         return {'pid': proc.pid, 'state': 'running', 'roi_config': roi_config_type, 'display': display}
 
@@ -332,27 +341,169 @@ def make_stop_pipeline_handler(agent_state):
             return 'No pipeline is currently running'
         graceful_stop_pipeline(proc)
         agent_state['pipeline_process'] = None
+        log_f = agent_state.pop('pipeline_log_file', None)
+        if log_f:
+            try:
+                log_f.close()
+            except Exception:
+                pass
         return 'Pipeline stopped successfully'
     return handler
 
 
-def make_capture_snapshot_handler(agent_state):
-    """Kích hoạt chụp ảnh thủ công từ pipeline đang chạy."""
+def capture_direct_csi_jpeg(sensor_id=0, width=1280, height=720, quality=80):
+    """Trích xuất 1 frame JPEG thực tế trực tiếp từ Camera CSI (nvarguscamerasrc) trên Jetson Nano.
+    
+    Phương pháp:
+      1. Thử dùng GStreamer CLI (gst-launch-1.0) chụp trực tiếp frame JPEG từ phần cứng nvarguscamerasrc
+      2. Nếu không thành công, dùng OpenCV VideoCapture với GStreamer pipeline
+    """
+    import tempfile
+    # Cách 1: GStreamer nvarguscamerasrc + jpegenc (tiêu chuẩn JetPack trên Jetson Nano)
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+
+        argv = [
+            "gst-launch-1.0", "-e", "-q",
+            "nvarguscamerasrc", "sensor-id=%d" % sensor_id, "num-buffers=4", "!",
+            "video/x-raw(memory:NVMM),width=%d,height=%d,framerate=30/1,format=NV12" % (width, height), "!",
+            "nvvidconv", "!",
+            "video/x-raw,format=I420", "!",
+            "jpegenc", "quality=%d" % quality, "!",
+            "filesink", "location=" + tmp_path
+        ]
+        res = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8)
+        if res.returncode == 0 and os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 1000:
+            with open(tmp_path, 'rb') as f:
+                data = f.read()
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+            _log('capture_direct_csi_jpeg: Captured %d bytes via gst-launch-1.0' % len(data))
+            return data
+    except Exception as e:
+        _log('Direct gst-launch CSI capture failed: %s' % e)
+
+    # Cách 2: OpenCV GStreamer pipeline
+    try:
+        gst_str = (
+            "nvarguscamerasrc sensor-id=%d ! "
+            "video/x-raw(memory:NVMM),width=%d,height=%d,framerate=30/1,format=NV12 ! "
+            "nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! "
+            "video/x-raw,format=BGR ! appsink drop=true max-buffers=1"
+        ) % (sensor_id, width, height)
+        import cv2
+        cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
+        if cap and cap.isOpened():
+            frame = None
+            import time
+            for _ in range(12):
+                ret, tmp = cap.read()
+                if ret and tmp is not None and tmp.size > 0:
+                    frame = tmp
+                    if tmp.mean() > 1.0:
+                        break
+                time.sleep(0.08)
+            cap.release()
+            if frame is not None:
+                ok, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+                if ok:
+                    _log('capture_direct_csi_jpeg: Captured %d bytes via OpenCV GStreamer' % len(buf))
+                    return buf.tobytes()
+    except Exception as e2:
+        _log('OpenCV CSI capture failed: %s' % e2)
+
+    return None
+
+
+def make_capture_snapshot_handler(agent_state, backend_url, edge_id, edge_token):
+    """Kích hoạt chụp ảnh theo yêu cầu (WebGIS -> Jetson qua action capture_test_snapshot).
+    
+    Hỗ trợ 2 chế độ:
+      - Pipeline đang chạy: ghi file flag SNAPSHOT_TRIGGER_FILE để pipeline worker chụp frame
+      - Pipeline đang dừng: tự động gọi capture_direct_csi_jpeg() từ Camera CSI và upload multipart lên Backend
+    """
     def handler(data):
         params = data.get('params', {})
-        reason = params.get('reason', 'manual')
+        reason = params.get('reason', 'manual_on_demand')
+        command_id = data.get('command_id', str(uuid.uuid4()))
 
         proc = agent_state.get('pipeline_process')
-        if proc is None or proc.poll() is not None:
-            raise RuntimeError('No pipeline is running to capture snapshot')
+        if proc is not None and proc.poll() is None:
+            # Ghi trigger file cho pipeline worker
+            _log('capture_snapshot: pipeline running, queueing trigger to worker')
+            try:
+                with open(SNAPSHOT_TRIGGER_FILE, 'w') as f:
+                    json.dump({'purpose': 'manual', 'reason': reason, 'command_id': command_id}, f)
+                return 'Snapshot request queued to active pipeline'
+            except Exception as err:
+                raise RuntimeError('Failed to trigger snapshot: %s' % err)
+        else:
+            # Pipeline đang dừng: Trực tiếp dùng Camera CSI để chụp ảnh
+            _log('capture_snapshot: pipeline idle, capturing live frame from CSI camera')
+            try:
+                sensor_id = int(os.getenv('SENSOR_ID', os.getenv('CSI_SENSOR_ID', '0')))
+                
+                # Ưu tiên số 1: Luôn chụp trực tiếp từ Camera CSI của Jetson Nano
+                jpeg_bytes = capture_direct_csi_jpeg(sensor_id=sensor_id, width=1280, height=720, quality=80)
+                
+                # Fallback nếu CSI hoàn toàn không có (ví dụ môi trường test không gắn camera CSI)
+                if not jpeg_bytes:
+                    _log('CSI camera not available, falling back to video/sample frame')
+                    sys.path.insert(0, os.path.join(SCRIPT_DIR, 'tools'))
+                    from roi_picker import grab_one_frame
+                    video_files = [f for f in os.listdir(VIDEO_DIR) if f.endswith(VIDEO_EXTENSIONS)] if os.path.exists(VIDEO_DIR) else []
+                    source = os.path.join(VIDEO_DIR, video_files[0]) if video_files else ''
+                    frame = grab_one_frame('file', source)
+                    import cv2
+                    ok, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                    if not ok:
+                        raise RuntimeError('JPEG encode failed')
+                    jpeg_bytes = buf.tobytes()
 
-        # Ghi trigger file cho pipeline worker
-        try:
-            with open(SNAPSHOT_TRIGGER_FILE, 'w') as f:
-                json.dump({'purpose': 'manual', 'reason': reason}, f)
-            return 'Snapshot enqueued'
-        except Exception as err:
-            raise RuntimeError('Failed to trigger snapshot: %s' % err)
+                # Upload multipart lên Backend
+                url = '%s/api/v1/congestion-events/snapshot' % backend_url.rstrip('/')
+                boundary = 'SnapshotBoundary' + uuid.uuid4().hex
+                parts = []
+                def _add_field(name, value):
+                    parts.append(('--' + boundary + '\r\n').encode('utf-8'))
+                    parts.append(('Content-Disposition: form-data; name="%s"\r\n\r\n' % name).encode('utf-8'))
+                    parts.append(str(value).encode('utf-8'))
+                    parts.append(b'\r\n')
+
+                _add_field('edge_id', edge_id)
+                _add_field('camera_id', os.getenv('CAMERA_ID', 'camera-01'))
+                _add_field('segment_id', os.getenv('SEGMENT_ID', 'segment-001'))
+                _add_field('traffic_status', 'FREE')
+                _add_field('trigger_reason', reason)
+                _add_field('command_id', command_id)
+                _add_field('timestamp', time.strftime('%Y-%m-%dT%H:%M:%S+07:00'))
+
+                # File part (chấp nhận image/file)
+                parts.append(('--' + boundary + '\r\n').encode('utf-8'))
+                parts.append(('Content-Disposition: form-data; name="image"; filename="snapshot_%s.jpg"\r\n'
+                              'Content-Type: image/jpeg\r\n\r\n' % command_id[:8]).encode('utf-8'))
+                parts.append(jpeg_bytes)
+                parts.append(b'\r\n')
+                parts.append(('--' + boundary + '--\r\n').encode('utf-8'))
+
+                body = b''.join(parts)
+                headers = {
+                    'Content-Type': 'multipart/form-data; boundary=' + boundary,
+                    'Content-Length': str(len(body)),
+                    'Authorization': 'Bearer ' + edge_token,
+                }
+                import urllib.request as _req
+                req = _req.Request(url, data=body, headers=headers, method='POST')
+                with _req.urlopen(req, timeout=12) as resp:
+                    if resp.status in (200, 201):
+                        return 'Snapshot captured and uploaded successfully (HTTP %d)' % resp.status
+                    else:
+                        raise RuntimeError('Upload returned HTTP %d' % resp.status)
+            except Exception as err:
+                raise RuntimeError('Direct snapshot capture failed: %s' % err)
 
     return handler
 
@@ -460,11 +611,16 @@ def _load_env_file(path, override=True):
             f = open(path, 'r')
         with f:
             for line in f:
-                line = line.strip()
+                line = line.strip().rstrip('\r\n')
                 if line and not line.startswith('#') and '=' in line:
                     key, val = line.split('=', 1)
                     key = key.strip()
-                    val = val.strip().strip('"\'')
+                    val = val.strip().strip('"\'').rstrip('\r')
+                    if key in ('MQTT_PORT', 'PORT', 'SENSOR_ID'):
+                        import re
+                        m = re.search(r'\d+', val)
+                        if m:
+                            val = m.group(0)
                     if override or key not in os.environ:
                         os.environ[key] = val
         return True
@@ -535,8 +691,8 @@ def run_agent():
     cmd_handler.register('set_roi_remote', make_set_roi_remote_handler())
     cmd_handler.register('start_pipeline', make_start_pipeline_handler(agent_state))
     cmd_handler.register('stop_pipeline', make_stop_pipeline_handler(agent_state))
-    cmd_handler.register('capture_snapshot', make_capture_snapshot_handler(agent_state))
-    cmd_handler.register('capture_test_snapshot', make_capture_snapshot_handler(agent_state))
+    cmd_handler.register('capture_snapshot', make_capture_snapshot_handler(agent_state, backend_url, edge_id, edge_token))
+    cmd_handler.register('capture_test_snapshot', make_capture_snapshot_handler(agent_state, backend_url, edge_id, edge_token))
     cmd_handler.register('request_status', make_request_status_handler(agent_state))
     cmd_handler.register('get_health', lambda data: collect_comprehensive_health())
     # Legacy aliases
@@ -573,23 +729,34 @@ def run_agent():
     _log('Agent is running. Waiting for commands via MQTT...')
     _log('Listening on topic: traffic/%s/command' % edge_id)
 
-    # Vòng lặp chính: giám sát pipeline process và dọn dẹp zombie
+    # Vòng lặp chính: giám sát pipeline process và dọn dẹp
     try:
         while True:
-            time.sleep(5.0)
+            time.sleep(1.0)
             proc = agent_state.get('pipeline_process')
             if proc is not None:
                 retcode = proc.poll()
                 if retcode is not None:
-                    _log('Pipeline PID=%d exited with code=%d' % (proc.pid, retcode))
-                    try:
-                        out, _ = proc.communicate(timeout=1.0)
-                        if out:
-                            _log('Pipeline output:\n%s' % out.decode('utf-8', errors='ignore')[-1500:])
-                    except Exception:
-                        pass
+                    _log('Pipeline PID=%d finished/exited with code=%d' % (proc.pid, retcode))
                     agent_state['pipeline_process'] = None
                     agent_state['pipeline_started_at'] = None
+                    log_f = agent_state.pop('pipeline_log_file', None)
+                    if log_f:
+                        try:
+                            log_f.close()
+                        except Exception:
+                            pass
+                    # Bắn MQTT thông báo pipeline đã hoàn thành để WebGIS cập nhật UI ngay lập tức
+                    try:
+                        publisher.publish_command_result(
+                            command_id='auto-stop',
+                            action='stop_pipeline',
+                            status='completed',
+                            message='Video playback finished (code %d). Display window closed.' % retcode
+                        )
+                        _log('Notified WebGIS that pipeline completed automatically.')
+                    except Exception as e:
+                        _log('Failed to notify auto-stop via MQTT: %s' % e)
 
     except KeyboardInterrupt:
         _log('Agent shutting down...')

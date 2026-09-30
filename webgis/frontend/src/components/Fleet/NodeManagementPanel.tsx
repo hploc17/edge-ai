@@ -1,8 +1,7 @@
 import React, { useState } from "react";
-import { X, Search, Video, Plus, Trash2, MapPin, Gauge, Terminal } from "lucide-react";
+import { X, Search, Video, Plus, Trash2, MapPin, Gauge, Terminal, Camera } from "lucide-react";
 import type { NodeDetail } from "../../types/gis";
 import { api } from "../../services/api";
-import { RemoteControlModal } from "./RemoteControlModal";
 
 interface NodeManagementPanelProps {
   nodes: NodeDetail[];
@@ -10,6 +9,8 @@ interface NodeManagementPanelProps {
   onSelectNode: (edgeId: string) => void;
   onOpenAddNode: () => void;
   onRefreshNodes: () => void;
+  onOpenCamera?: (node: NodeDetail) => void;
+  onOpenRemote?: (node: NodeDetail) => void;
 }
 
 export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
@@ -17,11 +18,12 @@ export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
   onClose,
   onSelectNode,
   onOpenAddNode,
-  onRefreshNodes
+  onRefreshNodes,
+  onOpenCamera,
+  onOpenRemote
 }) => {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
-  const [remoteNode, setRemoteNode] = useState<NodeDetail | null>(null);
 
   const filteredNodes = nodes.filter((n) => {
     const matchSearch = n.name.toLowerCase().includes(search.toLowerCase()) || n.edge_id.toLowerCase().includes(search.toLowerCase());
@@ -127,12 +129,30 @@ export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
               </div>
 
               <div className="flex items-center gap-1">
+                {/* Nút Xem Camera */}
+                {onOpenCamera && (
+                  <button
+                    id={`btn-camera-${node.edge_id}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpenCamera(node);
+                    }}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 hover:bg-emerald-600 hover:text-white border border-emerald-200 text-emerald-700 text-[10px] font-bold transition shadow-xs"
+                    title="Xem Camera & Chụp ảnh theo yêu cầu"
+                  >
+                    <Camera className="w-3 h-3" />
+                    <span>Xem Cam</span>
+                  </button>
+                )}
+
                 {/* Nút điều khiển từ xa (Luôn hiển thị) */}
                 <button
                   id={`btn-remote-${node.edge_id}`}
                   onClick={(e) => {
                     e.stopPropagation();
-                    setRemoteNode(node);
+                    if (onOpenRemote) {
+                      onOpenRemote(node);
+                    }
                   }}
                   className="flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 hover:bg-blue-600 hover:text-white border border-blue-200 text-blue-700 text-[10px] font-bold transition shadow-xs"
                   title="Điều khiển từ xa & Cấu hình ROI"
@@ -171,15 +191,6 @@ export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
           </div>
         ))}
       </div>
-
-      {/* Remote Control Modal */}
-      {remoteNode && (
-        <RemoteControlModal
-          edgeId={remoteNode.edge_id}
-          nodeName={remoteNode.name}
-          onClose={() => setRemoteNode(null)}
-        />
-      )}
     </div>
   );
 };

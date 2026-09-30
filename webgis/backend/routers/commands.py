@@ -15,10 +15,6 @@ class CommandRequest(BaseModel):
 @router.post("/send")
 def send_command(req: CommandRequest):
     """Dispatch command to edge device via MQTT topic traffic/{edge_id}/command."""
-    node = store.get_node(req.edge_id)
-    if not node:
-        raise HTTPException(status_code=404, detail="Edge device not found")
-
     command_id = f"cmd-{uuid.uuid4().hex[:8]}"
     success = mqtt_service.publish_command(
         edge_id=req.edge_id,

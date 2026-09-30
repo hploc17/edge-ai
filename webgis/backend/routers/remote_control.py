@@ -285,7 +285,13 @@ async def get_cached_preview_frame(edge_id: str, request_id: str):
         if matches:
             item = matches[-1]
         else:
-            raise HTTPException(status_code=404, detail="Preview frame not ready yet")
+            return {
+                "status": "pending",
+                "edge_id": edge_id,
+                "request_id": request_id,
+                "image_data": None,
+                "message": "Preview frame not ready yet",
+            }
     import base64 as _b64
     img_b64 = _b64.b64encode(item["data"]).decode("utf-8")
     return {

@@ -42,7 +42,7 @@ except ImportError:
     pass
 
 # Configuration matching Backend
-BACKEND_URL = os.getenv('BACKEND_URL', 'http://localhost:3000').rstrip('/')
+BACKEND_URL = os.getenv('BACKEND_URL', 'http://localhost:8000').rstrip('/')
 EDGE_TOKEN = os.getenv('EDGE_TOKEN', 'CHANGE_ME_EDGE_TOKEN_RANDOM_STRING')
 EDGE_ID = os.getenv('EDGE_ID', 'edge-01')
 CAMERA_ID = os.getenv('CAMERA_ID', 'camera-01')
@@ -125,7 +125,7 @@ def generate_test_frame(vehicle_count, avg_speed, status):
     success, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
     return buf.tobytes() if success else None
 
-def upload_snapshot_to_backend(jpeg_bytes, event_id, metrics):
+def upload_snapshot_to_backend(jpeg_bytes, event_id, metrics, trigger_reason='manual_on_demand'):
     """Upload JPEG bytes to Backend /api/v1/congestion-events/snapshot via multipart form."""
     try:
         boundary = 'Boundary-%s' % uuid.uuid4().hex
@@ -137,6 +137,7 @@ def upload_snapshot_to_backend(jpeg_bytes, event_id, metrics):
             'camera_id': CAMERA_ID,
             'segment_id': SEGMENT_ID,
             'timestamp': iso_now(),
+            'trigger_reason': trigger_reason,
             'traffic_status': str(metrics.get('traffic_status', 'CONGESTED')),
             'current_vehicle_count': str(metrics.get('current_vehicle_count', 0)),
             'avg_speed_kmh': str(metrics.get('avg_speed_kmh', 12.5)),
@@ -170,7 +171,7 @@ def upload_snapshot_to_backend(jpeg_bytes, event_id, metrics):
             method='POST',
         )
         with urllib_request.urlopen(req, timeout=10) as resp:
-            print("[SNAPSHOT] Successfully uploaded snapshot to %s (HTTP %d)" % (UPLOAD_ENDPOINT, resp.getcode()))
+            print("[SNAPSHOT] Successfully uploaded snapshot (%s) to %s (HTTP %d)" % (trigger_reason, UPLOAD_ENDPOINT, resp.getcode()))
             return True
     except Exception as err:
         print("[SNAPSHOT] Upload failed: %s" % err)
@@ -191,6 +192,9 @@ class JetsonSimulator:
         self.vehicle_count = 24
         self.avg_speed = 12.5
         self.status = 'SLOW'
+        self.start_time = time.time()
+        self.last_congestion_snapshot_time = 0.0
+        self.congestion_cooldown_seconds = 25.0
 
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -328,6 +332,9 @@ class JetsonSimulator:
                 self.publish_result(command_id, action, 'completed', ['1.h264', '2.h264', '3.h264', '16.h264'])
 
             elif action == 'capture_preview':
+                req_id = params.get('request_id', '')
+                if req_id:
+                    self._upload_simulator_preview(req_id)
                 self.publish_result(command_id, action, 'completed', 'Preview frame uploaded (simulator).')
 
             elif action == 'start_pipeline':
@@ -340,6 +347,58 @@ class JetsonSimulator:
                 self.publish_result(command_id, action, 'completed', 'Command %s accepted.' % action)
         except Exception as e:
             print("[CMD ERROR] %s" % e)
+
+    def _upload_simulator_preview(self, request_id):
+        try:
+            import urllib.request
+            import uuid
+            import numpy as np
+            import cv2
+
+            img = np.zeros((720, 1280, 3), dtype=np.uint8)
+            img[:320, :] = [160, 140, 120]
+            img[320:, :] = [60, 60, 65]
+            for y in range(360, 720, 70):
+                cv2.line(img, (640, y), (640, y + 35), (255, 255, 255), 4)
+                cv2.line(img, (380, y), (380, y + 35), (200, 200, 200), 2)
+                cv2.line(img, (900, y), (900, y + 35), (200, 200, 200), 2)
+            cv2.putText(img, "JETSON NANO - CAMERA PREVIEW (1280x720)", (50, 70),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+            cv2.putText(img, f"Node: {self.edge_id} | Live Stream Preview", (50, 115),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (220, 220, 220), 2)
+
+            _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            jpeg_bytes = buf.tobytes()
+
+            url = f"http://127.0.0.1:8000/api/edge/{self.edge_id}/capture"
+            boundary = "SimBoundary" + uuid.uuid4().hex
+            parts = []
+
+            def _field(name, val):
+                parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{val}\r\n".encode('utf-8'))
+
+            _field('purpose', 'roi_setup')
+            _field('request_id', request_id)
+            _field('timestamp', iso_now())
+
+            parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"preview.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n".encode('utf-8'))
+            parts.append(jpeg_bytes)
+            parts.append(f"\r\n--{boundary}--\r\n".encode('utf-8'))
+
+            body = b''.join(parts)
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={
+                    'Content-Type': f'multipart/form-data; boundary={boundary}',
+                    'X-Edge-Token': 'dev-edge-token',
+                },
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                print(f"[SIMULATOR] Uploaded dummy preview JPEG for req {request_id}, status: {resp.status}")
+        except Exception as err:
+            print(f"[SIMULATOR ERROR] Failed to upload preview: {err}")
 
     def publish_result(self, command_id, action, status, message):
         res = {
@@ -428,6 +487,42 @@ class JetsonSimulator:
                 }
 
                 self.client.publish(TOPIC_TELEMETRY, json.dumps(payload), qos=0)
+
+                # Tự động chụp 1 ảnh khi phát hiện kẹt xe (CONGESTED) kèm bộ đếm Cooldown 25s
+                if self.status == 'CONGESTED':
+                    now_sec = time.time()
+                    if (now_sec - self.last_congestion_snapshot_time) >= self.congestion_cooldown_seconds:
+                        self.last_congestion_snapshot_time = now_sec
+                        print("[AUTO-SNAPSHOT] Phat hien KET XE (CONGESTED)! Tien hanh chup va upload anh...")
+                        
+                        def _trigger_auto_capture(v_cnt, spd, st, sc):
+                            try:
+                                snap_buf = generate_test_frame(v_cnt, spd, st)
+                                if snap_buf:
+                                    ev_id = str(uuid.uuid4())
+                                    snap_metrics = {
+                                        'traffic_status': 'CONGESTED',
+                                        'current_vehicle_count': v_cnt,
+                                        'avg_speed_kmh': spd,
+                                        'density_veh_per_km_lane': round(v_cnt * 1.5, 1),
+                                        'estimated_flow_veh_per_min': round(v_cnt * 1.15, 1),
+                                        'stopped_vehicle_ratio': 0.35,
+                                        'congestion_score': sc,
+                                    }
+                                    upload_snapshot_to_backend(
+                                        snap_buf,
+                                        ev_id,
+                                        snap_metrics,
+                                        trigger_reason='auto_congestion_detected'
+                                    )
+                            except Exception as ex:
+                                print("[AUTO-SNAPSHOT ERROR] %s" % ex)
+
+                        threading.Thread(
+                            target=_trigger_auto_capture,
+                            args=(self.vehicle_count, self.avg_speed, self.status, congestion_score),
+                            daemon=True
+                        ).start()
             except Exception as err:
                 print("[TELEMETRY ERROR] %s" % err)
 

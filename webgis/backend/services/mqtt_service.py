@@ -4,6 +4,7 @@ import ssl
 import threading
 import time
 import uuid
+from datetime import datetime
 import paho.mqtt.client as mqtt_lib
 
 from config import MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS, MQTT_CLIENT_ID
@@ -85,38 +86,55 @@ class MQTTService:
             subtopic = parts[2]
 
             if subtopic == "telemetry":
-                if not store.get_node(edge_id):
-                    # Auto-discover node if telemetry received first
-                    new_node = {
+                if store.get_node(edge_id):
+                    # Node đã được Admin phê duyệt → cập nhật telemetry bình thường
+                    store.update_telemetry(edge_id, payload)
+                    self._broadcast_async({
+                        "type": "telemetry",
                         "edge_id": edge_id,
-                        "name": f"Camera AI Jetson ({edge_id})",
-                        "camera_id": payload.get("camera_id", "camera-01"),
-                        "segment_id": payload.get("segment_id", "segment-001"),
-                        "status": "online",
-                        "last_seen": payload.get("timestamp") or time.strftime("%Y-%m-%dT%H:%M:%S+07:00")
-                    }
-                    store.upsert_node(new_node)
+                        "data": payload
+                    })
+                else:
+                    # Node CHƯA được phê duyệt → chỉ cập nhật hàng chờ pending
+                    is_new = edge_id not in store.pending_nodes
+                    store.touch_pending(edge_id, payload) if not is_new else store.add_pending_node(edge_id, payload)
+                    if is_new:
+                        print(f"[MQTT] New unapproved device detected from telemetry: {edge_id}")
+                        self._broadcast_async({
+                            "type": "device_pending",
+                            "edge_id": edge_id,
+                            "node": store.get_pending_node(edge_id),
+                            "pending_count": len(store.pending_nodes)
+                        })
+
+            elif subtopic == "registration":
+                payload["edge_id"] = edge_id
+                if store.get_node(edge_id):
+                    # Node đã được duyệt trước đây → chỉ cập nhật thông tin kỹ thuật (không thay đổi tọa độ Admin đã set)
+                    node = store.nodes[edge_id]
+                    for key in ("model_version", "camera_id"):
+                        if payload.get(key):
+                            node[key] = payload[key]
+                    node["last_seen"] = datetime.now().isoformat()
+                    node["status"] = "online"
+                    store._persist_nodes()
+                    print(f"[MQTT] Approved node {edge_id} re-connected (registration).")
                     self._broadcast_async({
                         "type": "node_registered",
                         "edge_id": edge_id,
                         "node": store.get_node(edge_id)
                     })
-                store.update_telemetry(edge_id, payload)
-                self._broadcast_async({
-                    "type": "telemetry",
-                    "edge_id": edge_id,
-                    "data": payload
-                })
-
-            elif subtopic == "registration":
-                payload["edge_id"] = edge_id
-                saved_node = store.upsert_node(payload)
-                print(f"[MQTT] Auto-registered/updated Edge node: {edge_id}")
-                self._broadcast_async({
-                    "type": "node_registered",
-                    "edge_id": edge_id,
-                    "node": store.get_node(edge_id)
-                })
+                else:
+                    # Node chưa được duyệt → vào hàng chờ
+                    is_new = edge_id not in store.pending_nodes
+                    store.add_pending_node(edge_id, payload) if is_new else store.touch_pending(edge_id, payload)
+                    print(f"[MQTT] Registration received for unapproved device: {edge_id} (pending approval)")
+                    self._broadcast_async({
+                        "type": "device_pending",
+                        "edge_id": edge_id,
+                        "node": store.get_pending_node(edge_id),
+                        "pending_count": len(store.pending_nodes)
+                    })
 
             elif subtopic == "device-health":
                 store.update_node_health(edge_id, payload)
@@ -129,23 +147,8 @@ class MQTTService:
 
             elif subtopic == "heartbeat":
                 node = store.get_node(edge_id)
-                if not node:
-                    # Auto-discover node from heartbeat
-                    new_node = {
-                        "edge_id": edge_id,
-                        "name": f"Camera AI Jetson ({edge_id})",
-                        "camera_id": payload.get("camera_id", "camera-01"),
-                        "status": payload.get("status", "online"),
-                        "last_seen": payload.get("timestamp") or time.strftime("%Y-%m-%dT%H:%M:%S+07:00")
-                    }
-                    store.upsert_node(new_node)
-                    print(f"[MQTT] Auto-discovered Edge node from heartbeat: {edge_id}")
-                    self._broadcast_async({
-                        "type": "node_registered",
-                        "edge_id": edge_id,
-                        "node": store.get_node(edge_id)
-                    })
-                else:
+                if node:
+                    # Node đã được phê duyệt → cập nhật trạng thái online
                     node["status"] = payload.get("status", "online")
                     node["last_seen"] = payload.get("timestamp") or time.strftime("%Y-%m-%dT%H:%M:%S+07:00")
                     self._broadcast_async({
@@ -154,6 +157,23 @@ class MQTTService:
                         "status": node["status"],
                         "last_seen": node["last_seen"]
                     })
+                else:
+                    # Node CHƯA được phê duyệt → cập nhật pending
+                    is_new = edge_id not in store.pending_nodes
+                    hb_data = {
+                        "edge_id": edge_id,
+                        "camera_id": payload.get("camera_id", "unknown"),
+                        "status": payload.get("status", "online"),
+                    }
+                    store.add_pending_node(edge_id, hb_data) if is_new else store.touch_pending(edge_id, payload)
+                    if is_new:
+                        print(f"[MQTT] New unapproved device detected from heartbeat: {edge_id}")
+                        self._broadcast_async({
+                            "type": "device_pending",
+                            "edge_id": edge_id,
+                            "node": store.get_pending_node(edge_id),
+                            "pending_count": len(store.pending_nodes)
+                        })
 
             elif subtopic == "command-result":
                 command_id = payload.get("command_id", "")

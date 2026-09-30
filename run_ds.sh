@@ -17,19 +17,10 @@ fi
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "[*] Duong dan thu muc du an: ${PROJECT_DIR}"
 
-# 3. Kiem tra: Uu tien image san co tren may
-if [ -z "${IMAGE_NAME}" ]; then
-    if docker image inspect "jetson-traffic-ai-deepstream:latest" >/dev/null 2>&1; then
-        IMAGE_NAME="jetson-traffic-ai-deepstream:latest"
-    elif docker image inspect "jetson-deepstream-edge:latest" >/dev/null 2>&1; then
-        IMAGE_NAME="jetson-deepstream-edge:latest"
-    elif docker image inspect "traffic-edge-nano:latest" >/dev/null 2>&1; then
-        IMAGE_NAME="traffic-edge-nano:latest"
-    else
-        IMAGE_NAME="traffic-edge-nano:latest"
-    fi
-fi
+IMAGE_NAME="${IMAGE_NAME:-traffic-edge-nano:latest}"
+CONTAINER_NAME="jetson_deepstream_traffic"
 
+# 3. Kiem tra: Neu image chua ton tai moi build tu Dockerfile cua optimal
 if ! docker image inspect "${IMAGE_NAME}" >/dev/null 2>&1; then
     echo "[*] Image '${IMAGE_NAME}' chua ton tai. Dang build lan dau tu Dockerfile..."
     docker build -t ${IMAGE_NAME} -f "$PROJECT_DIR/Dockerfile" "$PROJECT_DIR"

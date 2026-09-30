@@ -1,7 +1,8 @@
 import React from "react";
 import ReactECharts from "echarts-for-react";
-import { X, Gauge, Car, AlertTriangle, Cpu, History, Radio, Ruler, Terminal } from "lucide-react";
+import { X, Gauge, Car, AlertTriangle, Cpu, History, Radio, Ruler, Terminal, Camera } from "lucide-react";
 import type { NodeDetail } from "../../types/gis";
+import { API_HOST_URL } from "../../services/api";
 
 interface NodeDashboardDrawerProps {
   node: NodeDetail | null;
@@ -9,6 +10,7 @@ interface NodeDashboardDrawerProps {
   onOpenHealth: () => void;
   onOpenHistoryForSegment: (segmentId: string) => void;
   onOpenRemote?: () => void;
+  onOpenCamera?: () => void;
 }
 
 export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
@@ -16,12 +18,31 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
   onClose,
   onOpenHealth,
   onOpenHistoryForSegment,
-  onOpenRemote
+  onOpenRemote,
+  onOpenCamera
 }) => {
   if (!node) return null;
 
-  const counts = node.counts_by_class || { motorcycle: 0, car: 0, bus: 0, truck: 0 };
-  const totalVehicles = Object.values(counts).reduce((a, b) => (a || 0) + (b || 0), 0);
+  const counts = node.counts_by_class || {};
+  // Hỗ trợ cả hai định dạng: 'motorcycle' (chuẩn WebGIS) và 'motorbike' (raw YOLO/Jetson COCO label)
+  const motoCount = (counts.motorcycle ?? counts.motorbike ?? 0);
+  const carCount = counts.car ?? 0;
+  const busCount = counts.bus ?? 0;
+  const truckCount = counts.truck ?? 0;
+  const bicycleCount = counts.bicycle ?? 0;
+  const totalVehicles = motoCount + carCount + busCount + truckCount + bicycleCount;
+
+  // ECharts Donut Option for Vehicle Classification
+  const donutData = [
+    { value: motoCount, name: "Xe máy" },
+    { value: carCount, name: "Ô tô con" },
+    { value: busCount, name: "Xe buýt" },
+    { value: truckCount, name: "Xe tải" },
+    ...(bicycleCount > 0 ? [{ value: bicycleCount, name: "Xe đạp" }] : []),
+  ].filter(d => d.value > 0);
+
+  // Hiển thị placeholder nếu chưa có dữ liệu
+  const hasData = totalVehicles > 0;
 
   // ECharts Donut Option for Vehicle Classification
   const donutOption = {
@@ -40,7 +61,7 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
       itemHeight: 10,
       textStyle: { color: "#475569", fontSize: 11 }
     },
-    color: ["#3b82f6", "#10b981", "#f59e0b", "#ec4899"],
+    color: ["#3b82f6", "#10b981", "#f59e0b", "#ec4899", "#8b5cf6"],
     series: [
       {
         name: "Phương tiện",
@@ -62,11 +83,8 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
             color: "#0f172a"
           }
         },
-        data: [
-          { value: counts.motorcycle || 0, name: "Xe máy" },
-          { value: counts.car || 0, name: "Ô tô con" },
-          { value: counts.bus || 0, name: "Xe buýt" },
-          { value: counts.truck || 0, name: "Xe tải" }
+        data: hasData ? donutData : [
+          { value: 1, name: "Chưa có dữ liệu", itemStyle: { color: "#e2e8f0" } }
         ]
       }
     ]
@@ -169,9 +187,16 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
               <Ruler className="w-4 h-4 text-emerald-600" />
               Thông số Tuyến đường Thực tế
             </span>
-            <span className="text-[11px] font-mono font-bold text-slate-500 bg-white px-2 py-0.5 rounded border border-slate-200">
-              {node.segment_id || "segment-001"}
-            </span>
+            <div className="flex items-center gap-1">
+              {node.osm_road_name && (
+                <span className="text-[10px] font-medium text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200 flex items-center gap-0.5">
+                  🗺️ OSM
+                </span>
+              )}
+              <span className="text-[11px] font-mono font-bold text-slate-500 bg-white px-2 py-0.5 rounded border border-slate-200">
+                {node.segment_id || "segment-001"}
+              </span>
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div className="p-2.5 rounded-lg bg-white border border-slate-200">
@@ -188,7 +213,7 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
             </div>
             <div className="p-2.5 rounded-lg bg-white border border-slate-200">
               <span className="text-slate-500 block text-[11px] mb-0.5">Tốc độ thiết kế</span>
-              <span className="text-sm font-bold font-mono text-slate-800">60 km/h</span>
+              <span className="text-sm font-bold font-mono text-slate-800">{(node as any).speed_limit_kmh || 60} km/h</span>
             </div>
           </div>
         </div>
@@ -197,47 +222,105 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
         <div className="p-3 rounded-xl bg-slate-50/90 border border-slate-200 shadow-sm">
           <div className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-1 flex items-center justify-between">
             <span>Cơ cấu phương tiện</span>
-            <span className="text-xs text-slate-500 font-normal">Tổng: {totalVehicles} xe</span>
+            <span className="text-xs text-slate-500 font-normal">
+              {hasData ? `Tổng: ${totalVehicles} xe` : "⏳ Chờ dữ liệu Jetson..."}
+            </span>
           </div>
-          <div className="h-44 w-full">
-            <ReactECharts option={donutOption} style={{ height: "100%", width: "100%" }} />
-          </div>
+          {hasData ? (
+            <>
+              {/* Chi tiết từng loại phương tiện */}
+              <div className="grid grid-cols-2 gap-1.5 mb-2 text-[11px]">
+                {donutData.map((item, idx) => {
+                  const colors = ["text-blue-600 bg-blue-50 border-blue-200", "text-emerald-600 bg-emerald-50 border-emerald-200", "text-amber-600 bg-amber-50 border-amber-200", "text-pink-600 bg-pink-50 border-pink-200", "text-violet-600 bg-violet-50 border-violet-200"];
+                  return (
+                    <div key={item.name} className={`flex justify-between px-2 py-1 rounded-lg border ${colors[idx % colors.length]}`}>
+                      <span className="font-medium">{item.name}</span>
+                      <span className="font-bold font-mono">{item.value} xe</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="h-36 w-full">
+                <ReactECharts option={donutOption} style={{ height: "100%", width: "100%" }} />
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-24 text-slate-400 gap-1">
+              <span className="text-2xl">📹</span>
+              <span className="text-[11px] text-center">Chưa nhận dữ liệu từ Jetson.<br/>Đảm bảo Jetson đang chạy và kết nối MQTT.</span>
+            </div>
+          )}
         </div>
 
-        {/* Latest AI Camera Snapshot */}
-        {node.snapshot_url && (
-          <div className="p-3 rounded-xl bg-slate-50/90 border border-slate-200 shadow-sm">
-            <div className="flex items-center justify-between text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-              <span>Khung hình Camera AI mới nhất</span>
-              <span className="text-[10px] text-emerald-700 font-semibold flex items-center gap-1 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                AI BBOX
-              </span>
-            </div>
-            <div className="relative rounded-lg overflow-hidden border border-slate-200 group shadow-sm">
-              <img
-                src={node.snapshot_url}
-                alt="AI Camera Snapshot"
-                className="w-full h-36 object-cover transition duration-300 group-hover:scale-105"
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-slate-900/60 via-transparent to-transparent flex items-end p-2">
-                <span className="text-[11px] font-mono text-white font-medium">
-                  {node.last_seen ? new Date(node.last_seen).toLocaleTimeString() : "Live Snapshot"}
+        {/* Latest AI Camera Snapshot Card */}
+        {(() => {
+          const rawUrl = node.snapshot_url;
+          const displayUrl = rawUrl
+            ? (rawUrl.startsWith("http") ? rawUrl : `${API_HOST_URL}${rawUrl.startsWith("/") ? "" : "/"}${rawUrl}`)
+            : "";
+
+          return (
+            <div className="p-3 rounded-xl bg-slate-50/90 border border-slate-200 shadow-sm">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                <span className="flex items-center gap-1.5">
+                  <Camera className="w-3.5 h-3.5 text-blue-600" />
+                  Khung hình Camera AI
+                </span>
+                <span className="text-[10px] text-emerald-700 font-semibold flex items-center gap-1 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  LIVE SNAPSHOT
                 </span>
               </div>
+              <div
+                onClick={onOpenCamera}
+                className="relative rounded-lg overflow-hidden border border-slate-200 bg-slate-900 group shadow-sm cursor-pointer hover:border-emerald-500 transition aspect-video flex items-center justify-center"
+                title="Bấm để mở Modal Xem Cam & Chụp ảnh tức thì"
+              >
+                {displayUrl ? (
+                  <img
+                    src={displayUrl}
+                    alt="AI Camera Snapshot"
+                    className="w-full h-full object-cover transition duration-300 group-hover:scale-105"
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-slate-400 gap-1.5 p-4 text-center">
+                    <Camera className="w-8 h-8 text-slate-500 group-hover:text-emerald-400 transition" />
+                    <span className="text-xs text-slate-300 font-medium">Chưa có ảnh chụp</span>
+                    <span className="text-[10px] text-emerald-400 underline font-semibold">Nhấp để mở Cam & Chụp ngay</span>
+                  </div>
+                )}
+                <div className="absolute inset-0 bg-gradient-to-t from-slate-950/70 via-transparent to-transparent flex items-end justify-between p-2 pointer-events-none">
+                  <span className="text-[11px] font-mono text-white font-medium">
+                    {node.last_seen ? new Date(node.last_seen).toLocaleTimeString() : "Live Snapshot"}
+                  </span>
+                  <span className="text-[10px] bg-emerald-600 text-white font-bold px-2 py-0.5 rounded shadow">
+                    Xem & Chụp
+                  </span>
+                </div>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* Drawer Action Footer */}
       <div className="p-3 bg-slate-50/90 border-t border-slate-200 flex flex-col gap-2">
+        {onOpenCamera && (
+          <button
+            onClick={onOpenCamera}
+            className="w-full flex items-center justify-center space-x-2 py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs font-bold transition shadow-md shadow-emerald-500/25"
+          >
+            <Camera className="w-4 h-4" />
+            <span>📸 Xem Cam & Chụp ảnh theo yêu cầu</span>
+          </button>
+        )}
+
         {onOpenRemote && (
           <button
             onClick={onOpenRemote}
-            className="w-full flex items-center justify-center space-x-2 py-2.5 px-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-bold transition shadow-md shadow-blue-500/25"
+            className="w-full flex items-center justify-center space-x-2 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold transition shadow-sm"
           >
-            <Terminal className="w-4 h-4" />
+            <Terminal className="w-3.5 h-3.5 text-blue-400" />
             <span>Điều khiển từ xa & Cấu hình ROI Jetson</span>
           </button>
         )}

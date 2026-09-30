@@ -1,0 +1,31 @@
+{
+  "seg-edge-01": {
+    "segment_id": "seg-edge-01",
+    "road_name": "Pho To Huu",
+    "lane_count": 2,
+    "road_length_m": 200.0,
+    "road_width_m": 8.0,
+    "speed_limit_kmh": 60.0,
+    "coordinates": [
+      [
+        105.795434,
+        20.9985525
+      ],
+      [
+        105.7952238,
+        20.9983892
+      ],
+      [
+        105.7950569,
+        20.9982233
+      ]
+    ],
+    "congestion_score": 0,
+    "traffic_status": "FREE",
+    "traffic_color": "#10B981",
+    "avg_speed_kmh": 0.0,
+    "current_vehicle_count": 0,
+    "density_veh_per_km_lane": 0.0,
+    "updated_at": "2026-09-29T09:45:26.491194"
+  }
+}

@@ -7,10 +7,10 @@ Requires=docker.service nvargus-daemon.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-User=nano
-WorkingDirectory=/home/nano/edge_traffic_optimal
-ExecStart=/bin/bash /home/nano/edge_traffic_optimal/run.sh
-ExecStop=/bin/bash /home/nano/edge_traffic_optimal/stop.sh
+User=admin1
+WorkingDirectory=/home/admin1/Desktop/traffic
+ExecStart=/bin/bash /home/admin1/Desktop/traffic/run.sh
+ExecStop=/bin/bash /home/admin1/Desktop/traffic/stop.sh
 TimeoutStartSec=120
 
 [Install]

@@ -11,6 +11,12 @@ from services.websocket_manager import ws_manager
 from services.mqtt_service import mqtt_service
 from routers import gis, nodes, history, commands
 from routers import remote_control
+from routers import snapshots
+from routers import osm as osm_router
+
+# Thư mục lưu trữ ảnh snapshots tĩnh
+SNAPSHOTS_STORAGE_DIR = Path(__file__).resolve().parent / "data" / "snapshots"
+SNAPSHOTS_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -45,6 +51,11 @@ app.include_router(nodes.router)
 app.include_router(history.router)
 app.include_router(commands.router)
 app.include_router(remote_control.router)
+app.include_router(snapshots.router)
+app.include_router(osm_router.router)
+
+# Mount Static Files cho Snapshots (truy cập tại /snapshots/{filename})
+app.mount("/snapshots", StaticFiles(directory=str(SNAPSHOTS_STORAGE_DIR)), name="snapshots")
 
 # WebSocket Endpoint for Live Telemetry & Device Health Streaming
 @app.websocket("/ws")

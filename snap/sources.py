@@ -7,10 +7,13 @@ import cv2
 import numpy as np
 
 def validate_jpeg(data, maximum=2 * 1024 * 1024):
-    if not isinstance(data, bytes) or not data.startswith(b"\xff\xd8\xff") or not data.endswith(b"\xff\xd9"):
-        raise ValueError("Invalid or truncated JPEG")
+    if not isinstance(data, bytes):
+        raise ValueError("Invalid JPEG: not bytes")
+    trimmed = data.rstrip(b"\x00\r\n ")
+    if not trimmed.startswith(b"\xff\xd8") or not trimmed.endswith(b"\xff\xd9"):
+        raise ValueError("Invalid or truncated JPEG (size=%d bytes)" % len(data))
     if len(data) > maximum:
-        raise ValueError("JPEG exceeds SNAPSHOT_MAX_JPEG_BYTES")
+        raise ValueError("JPEG exceeds SNAPSHOT_MAX_JPEG_BYTES (%d > %d)" % (len(data), maximum))
     return data
 
 

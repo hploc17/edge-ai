@@ -1,19 +1,23 @@
 import React from "react";
-import { Activity, ShieldCheck, Video, History, Settings, PlusCircle, AlertTriangle } from "lucide-react";
+import { Activity, ShieldCheck, Video, History, Settings, PlusCircle, AlertTriangle, Radio } from "lucide-react";
 import type { SummaryKPIs } from "../types/gis";
 
 interface NavbarProps {
   kpis: SummaryKPIs | null;
+  pendingCount?: number;
   onOpenHistory: () => void;
   onOpenFleet: () => void;
   onOpenAddNode: () => void;
+  onOpenPendingApproval?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   kpis,
+  pendingCount = 0,
   onOpenHistory,
   onOpenFleet,
-  onOpenAddNode
+  onOpenAddNode,
+  onOpenPendingApproval
 }) => {
   return (
     <header className="absolute top-3 left-3 right-3 z-20 flex items-center justify-between px-5 py-3 rounded-xl glass-panel text-slate-800">
@@ -69,6 +73,18 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Navigation Buttons */}
       <div className="flex items-center space-x-2.5">
+        {/* Pending Device Notification Bell */}
+        {pendingCount > 0 && onOpenPendingApproval && (
+          <button
+            onClick={onOpenPendingApproval}
+            className="relative flex items-center space-x-1.5 px-3.5 py-2 text-xs font-bold rounded-lg bg-amber-500 hover:bg-amber-600 text-white shadow-md shadow-amber-500/30 transition animate-pulse"
+          >
+            <Radio className="w-4 h-4" />
+            <span>{pendingCount} thiết bị mới</span>
+            <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 rounded-full text-[8px] flex items-center justify-center font-bold">{pendingCount}</span>
+          </button>
+        )}
+
         <button
           onClick={onOpenHistory}
           className="flex items-center space-x-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 transition shadow-sm"

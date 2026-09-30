@@ -4,7 +4,12 @@ class WebSocketService {
   private ws: WebSocket | null = null;
   private handlers: Set<MessageHandler> = new Set();
   private reconnectTimer: any = null;
-  private url: string = "ws://localhost:8000/ws";
+
+  private getUrl(): string {
+    const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
+    const wsProto = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${wsProto}//${host}:8000/ws`;
+  }
 
   connect() {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
@@ -12,7 +17,7 @@ class WebSocketService {
     }
 
     try {
-      this.ws = new WebSocket(this.url);
+      this.ws = new WebSocket(this.getUrl());
 
       this.ws.onopen = () => {
         console.log("[WS] Connected to WebGIS backend real-time stream");

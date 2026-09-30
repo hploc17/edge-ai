@@ -498,5 +498,11 @@ def build_pipeline(args, source, kind, Gst):
 def _make(Gst, element_type, name):
     elem = Gst.ElementFactory.make(element_type, name)
     if not elem:
-        raise RuntimeError('Cannot create GStreamer element: %s' % element_type)
+        factory = Gst.ElementFactory.find(element_type)
+        if factory is None:
+            raise RuntimeError(
+                'Cannot create GStreamer element: %s (plugin not found or blacklisted in ~/.cache/gstreamer-1.0). '
+                'Please run "xhost +" on Jetson host.' % element_type
+            )
+        raise RuntimeError('Cannot create GStreamer element: %s (factory found but instantiation failed)' % element_type)
     return elem

@@ -78,12 +78,13 @@ def grab_one_frame(source_type: str, source: str = None,
             cap = cv2.VideoCapture(dev_str)
 
     elif s_type == "csi":
+        sensor_id = int(os.getenv("SENSOR_ID", os.getenv("CSI_SENSOR_ID", "0")))
         gst_str = (
-            "nvarguscamerasrc sensor-id=0 ! "
+            "nvarguscamerasrc sensor-id={sensor} ! "
             "video/x-raw(memory:NVMM),width={w},height={h},framerate=30/1,format=NV12 ! "
             "nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! "
-            "video/x-raw,format=BGR ! appsink"
-        ).format(w=width, h=height)
+            "video/x-raw,format=BGR ! appsink drop=true max-buffers=1"
+        ).format(sensor=sensor_id, w=width, h=height)
         cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
 
     elif s_type == "rtsp":
@@ -97,12 +98,15 @@ def grab_one_frame(source_type: str, source: str = None,
 
     frame = None
     if cap and cap.isOpened():
-        # Doc thu toi da 5 frame de bo qua frame den dau tien
-        for _ in range(5):
+        # Doc thu toi da 15 frame voi delay nho de nvargus ISP khoi tao xong
+        import time
+        for _ in range(15):
             ret, tmp = cap.read()
-            if ret and tmp is not None:
+            if ret and tmp is not None and tmp.size > 0:
                 frame = tmp
-                break
+                if np.mean(frame) > 1.0:
+                    break
+            time.sleep(0.08)
         cap.release()
 
     if frame is None:
