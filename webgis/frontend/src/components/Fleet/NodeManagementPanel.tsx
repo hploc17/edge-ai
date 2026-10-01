@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { X, Search, Video, Plus, Trash2, MapPin, Gauge, Terminal, Camera } from "lucide-react";
+import { X, Search, Video, Plus, Trash2, MapPin, Gauge, Terminal, Camera, Settings, Cpu } from "lucide-react";
 import type { NodeDetail } from "../../types/gis";
 import { api } from "../../services/api";
 
@@ -11,6 +11,7 @@ interface NodeManagementPanelProps {
   onRefreshNodes: () => void;
   onOpenCamera?: (node: NodeDetail) => void;
   onOpenRemote?: (node: NodeDetail) => void;
+  onEditNode?: (node: NodeDetail) => void;
 }
 
 export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
@@ -20,7 +21,8 @@ export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
   onOpenAddNode,
   onRefreshNodes,
   onOpenCamera,
-  onOpenRemote
+  onOpenRemote,
+  onEditNode,
 }) => {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
@@ -118,9 +120,15 @@ export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
             className="p-3.5 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 hover:border-blue-300 cursor-pointer transition group shadow-sm"
           >
             <div className="flex items-start justify-between">
-              <div className="flex items-center gap-2 mb-1">
+              <div className="flex flex-wrap items-center gap-1.5 mb-1">
                 <span className={`w-2 h-2 rounded-full ${node.status === "online" ? "bg-emerald-500" : "bg-slate-400"}`} />
                 <span className="font-mono text-xs font-bold text-blue-700">{node.edge_id}</span>
+                {node.mac_address && (
+                  <span className="font-mono text-[9px] px-1 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200 font-semibold flex items-center gap-0.5" title={`Hardware MAC: ${node.mac_address}`}>
+                    <Cpu className="w-2.5 h-2.5 text-slate-400" />
+                    {node.mac_address}
+                  </span>
+                )}
                 <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
                   node.traffic_status === "CONGESTED" ? "bg-red-100 text-red-700 border border-red-300" : "bg-emerald-100 text-emerald-700 border border-emerald-300"
                 }`}>
@@ -142,6 +150,22 @@ export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
                   >
                     <Camera className="w-3 h-3" />
                     <span>Xem Cam</span>
+                  </button>
+                )}
+
+                {/* Nút Sửa Cấu hình Node */}
+                {onEditNode && (
+                  <button
+                    id={`btn-edit-${node.edge_id}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEditNode(node);
+                    }}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-50 hover:bg-indigo-600 hover:text-white border border-indigo-200 text-indigo-700 text-[10px] font-bold transition shadow-xs"
+                    title="Chỉnh sửa thông số không gian & gán MAC"
+                  >
+                    <Settings className="w-3 h-3" />
+                    <span>Sửa</span>
                   </button>
                 )}
 

@@ -78,36 +78,65 @@ def grab_one_frame(source_type: str, source: str = None,
             cap = cv2.VideoCapture(dev_str)
 
     elif s_type == "csi":
+        # Chụp trực tiếp từ Camera CSI phần cứng nvarguscamerasrc
         sensor_id = int(os.getenv("SENSOR_ID", os.getenv("CSI_SENSOR_ID", "0")))
-        gst_str = (
-            "nvarguscamerasrc sensor-id={sensor} ! "
-            "video/x-raw(memory:NVMM),width={w},height={h},framerate=30/1,format=NV12 ! "
-            "nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! "
-            "video/x-raw,format=BGR ! appsink drop=true max-buffers=1"
-        ).format(sensor=sensor_id, w=width, h=height)
-        cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
+        sensor_candidates = [sensor_id]
+        if 0 in sensor_candidates:
+            sensor_candidates.append(1)  # Jetson Nano B01 có 2 cổng CAM0 và CAM1
 
-    elif s_type == "rtsp":
-        if source:
-            cap = cv2.VideoCapture(source)
+        cap = None
+        import subprocess, tempfile
+        for sid in sensor_candidates:
+            # Cách 1: gst-launch-1.0 trực tiếp (chuẩn nhất trên Tegra nvarguscamerasrc)
+            try:
+                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_f:
+                    tmp_path = tmp_f.name
+                gst_cmd = [
+                    "gst-launch-1.0", "-e", "-q",
+                    "nvarguscamerasrc", "sensor-id=%d" % sid, "num-buffers=4", "!",
+                    "video/x-raw(memory:NVMM),width=%d,height=%d,framerate=30/1,format=NV12" % (width, height), "!",
+                    "nvvidconv", "!",
+                    "video/x-raw,format=I420", "!",
+                    "jpegenc", "quality=85", "!",
+                    "filesink", "location=" + tmp_path
+                ]
+                res = subprocess.run(gst_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=6)
+                if res.returncode == 0 and os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 1000:
+                    frame = cv2.imread(tmp_path)
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    if frame is not None and frame.size > 0:
+                        return frame
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
-    else:
-        # Thu mo truc tiep source neu khong xac dinh ro loai
-        if source:
-            cap = cv2.VideoCapture(source)
-
-    frame = None
-    if cap and cap.isOpened():
-        # Doc thu toi da 15 frame voi delay nho de nvargus ISP khoi tao xong
-        import time
-        for _ in range(15):
-            ret, tmp = cap.read()
-            if ret and tmp is not None and tmp.size > 0:
-                frame = tmp
-                if np.mean(frame) > 1.0:
-                    break
-            time.sleep(0.08)
-        cap.release()
+            # Cách 2: OpenCV VideoCapture qua GStreamer pipeline
+            try:
+                gst_str = (
+                    "nvarguscamerasrc sensor-id={sensor} ! "
+                    "video/x-raw(memory:NVMM),width={w},height={h},framerate=30/1,format=NV12 ! "
+                    "nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! "
+                    "video/x-raw,format=BGR ! appsink drop=true max-buffers=1"
+                ).format(sensor=sid, w=width, h=height)
+                cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
+                if cap and cap.isOpened():
+                    import time
+                    for _ in range(15):
+                        ret, tmp = cap.read()
+                        if ret and tmp is not None and tmp.size > 0 and np.mean(tmp) > 1.0:
+                            cap.release()
+                            return tmp
+                        time.sleep(0.08)
+                    cap.release()
+            except Exception:
+                pass
 
     if frame is None:
         print("[CANH BAO] Khong doc duoc frame truc tiep tu nguon '{}', dung khung hinh mau {}x{}.".format(

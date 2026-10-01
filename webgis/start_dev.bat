@@ -4,7 +4,7 @@ echo ================================================================
 echo   KHOI DONG DONG THOI BACKEND (FastAPI) VA FRONTEND (Vite)
 echo ================================================================
 echo.
-echo   [1] Backend API & Docs: http://localhost:8000/docs
+echo   [1] Backend API:        http://localhost:8000/docs
 echo   [2] Frontend Vite Dev:  http://localhost:5173
 echo.
 echo   Dang mo 2 cua so tien trinh rieng biet...

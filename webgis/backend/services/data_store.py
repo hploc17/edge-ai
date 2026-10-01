@@ -113,8 +113,17 @@ class DataStore:
         KHÔNG tự động gán tọa độ mặc định.
         Chỉ lưu thông tin kỹ thuật do Jetson tự báo cáo.
         """
+        mac_address = raw_data.get("mac_address")
+        if not mac_address and isinstance(raw_data.get("latest_health"), dict):
+            mac_address = raw_data["latest_health"].get("network", {}).get("mac_address")
+        if not mac_address and isinstance(raw_data.get("network"), dict):
+            mac_address = raw_data["network"].get("mac_address")
+        if not mac_address and isinstance(raw_data.get("raw_payload"), dict):
+            mac_address = raw_data["raw_payload"].get("mac_address")
+
         pending = {
             "edge_id": edge_id,
+            "mac_address": str(mac_address).strip().upper() if mac_address else None,
             "name": raw_data.get("name") or raw_data.get("device_name") or f"Thiết bị mới ({edge_id})",
             "camera_id": raw_data.get("camera_id", "unknown"),
             "model_version": raw_data.get("model_version", "unknown"),
@@ -142,6 +151,9 @@ class DataStore:
         """Cập nhật last_seen và thông số mới nhất cho node đang pending."""
         if edge_id in self.pending_nodes:
             self.pending_nodes[edge_id]["last_seen"] = datetime.now().isoformat()
+            new_mac = payload.get("mac_address")
+            if new_mac and not self.pending_nodes[edge_id].get("mac_address"):
+                self.pending_nodes[edge_id]["mac_address"] = str(new_mac).strip().upper()
             # Cập nhật thông số kỹ thuật nếu Jetson gửi thêm
             for key in ("model_version", "camera_id", "latitude", "longitude"):
                 if payload.get(key) is not None:
@@ -162,9 +174,18 @@ class DataStore:
         approved_data phải có ít nhất: latitude, longitude, road_name, lane_count.
         """
         raw = self.pending_nodes.get(edge_id, {})
+        mac_address = (
+            approved_data.get("mac_address")
+            or raw.get("mac_address")
+            or (raw.get("raw_payload", {}).get("mac_address") if isinstance(raw.get("raw_payload"), dict) else None)
+        )
+        if mac_address:
+            mac_address = str(mac_address).strip().upper()
+
         node = {
             # Thông tin từ Jetson (raw)
             "edge_id": edge_id,
+            "mac_address": mac_address,
             "name": approved_data.get("name") or raw.get("name") or f"Camera AI Jetson ({edge_id})",
             "camera_id": raw.get("camera_id", "camera-01"),
             "model_version": raw.get("model_version", ""),
@@ -249,6 +270,34 @@ class DataStore:
     def get_node(self, edge_id: str) -> Optional[Dict[str, Any]]:
         return self._enrich_node(self.nodes.get(edge_id))
 
+    def get_node_by_mac(self, mac_address: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Tìm approved node theo địa chỉ phần cứng MAC."""
+        if not mac_address:
+            return None
+        target = str(mac_address).strip().upper()
+        for edge_id, node in self.nodes.items():
+            if not isinstance(node, dict):
+                continue
+            mac = (node.get("mac_address") or "").strip().upper()
+            if not mac and isinstance(node.get("latest_health"), dict):
+                mac = (node["latest_health"].get("network", {}).get("mac_address") or "").strip().upper()
+            if mac and mac == target:
+                return self._enrich_node(node)
+        return None
+
+    def get_pending_by_mac(self, mac_address: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Tìm pending node theo địa chỉ phần cứng MAC."""
+        if not mac_address:
+            return None
+        target = str(mac_address).strip().upper()
+        for edge_id, pending in self.pending_nodes.items():
+            if not isinstance(pending, dict):
+                continue
+            mac = (pending.get("mac_address") or "").strip().upper()
+            if mac and mac == target:
+                return pending
+        return None
+
     def upsert_node(self, node_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Cập nhật thông số của một approved node (dùng khi Admin sửa thủ công).
@@ -256,6 +305,12 @@ class DataStore:
         """
         edge_id = node_data.get("edge_id", f"edge-{int(time.time()) % 1000}")
         node_data["edge_id"] = edge_id
+
+        # Preserve existing mac_address if present
+        if not node_data.get("mac_address") and edge_id in self.nodes:
+            existing_mac = self.nodes[edge_id].get("mac_address")
+            if existing_mac:
+                node_data["mac_address"] = existing_mac
 
         # Normalize nested geo dict
         if "geo" in node_data and isinstance(node_data["geo"], dict):

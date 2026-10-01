@@ -17,8 +17,9 @@ import {
 } from "lucide-react";
 import axios from "axios";
 import { wsService } from "../../services/websocket";
+import { API_HOST_URL } from "../../services/api";
 
-const API_BASE = "http://localhost:8000/api/v1";
+const API_BASE = `${API_HOST_URL}/api/v1`;
 
 
 // ── Kiểu dữ liệu ──────────────────────────────────────────────────────────────
@@ -115,8 +116,9 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
   onRestore,
 }) => {
   const [stage, setStage] = useState<Stage>("idle");
+  const [sourceType, setSourceType] = useState<"csi" | "file">("csi");
   const [videos, setVideos] = useState<string[]>([]);
-  const [selectedVideo, setSelectedVideo] = useState<string>("");
+  const [selectedVideo, setSelectedVideo] = useState<string>("csi");
   const [previewImage, setPreviewImage] = useState<string>("");
   const [requestId, setRequestId] = useState<string>("");
   const [drawMode, setDrawMode] = useState<DrawMode>(null);
@@ -256,20 +258,28 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
   // ── Step 2: Lấy frame preview ───────────────────────────────────────────────
 
   const handleGetPreview = async () => {
-    if (!selectedVideo) return;
+    if (sourceType === "file" && !selectedVideo) return;
     setStage("loading_preview");
     setErrorMessage("");
     setPreviewImage("");
-    setStatusMessage("Đang gửi yêu cầu đến Jetson...");
+    setStatusMessage(
+      sourceType === "csi"
+        ? "Đang gửi lệnh yêu cầu Camera CSI chụp khung hình..."
+        : "Đang gửi yêu cầu đến Jetson..."
+    );
 
     try {
       const res = await axios.post(`${API_BASE}/nodes/${edgeId}/preview`, {
-        source_type: "file",
-        source: selectedVideo,
+        source_type: sourceType,
+        source: sourceType === "csi" ? "csi" : selectedVideo,
       });
       const reqId = res.data.request_id || "";
       setRequestId(reqId);
-      setStatusMessage("Đang chờ Jetson chụp khung hình...");
+      setStatusMessage(
+        sourceType === "csi"
+          ? "Đang chờ Jetson chụp ảnh từ Camera CSI và tải lên..."
+          : "Đang chờ Jetson trích xuất khung hình..."
+      );
 
       // Polling fallback nếu WebSocket bị trễ
       let attempts = 0;
@@ -285,7 +295,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
             clearInterval(pollTimer);
             setPreviewImage(pollRes.data.image_data);
             setStage("preview_ready");
-            setStatusMessage("Đã nhận khung hình từ Jetson. Chọn chế độ vẽ ROI.");
+            setStatusMessage("Đã nhận khung hình từ Jetson! Bạn hãy bắt đầu vẽ ROI ở Bước 3.");
           }
         } catch (_) {
           // Chưa có frame, chờ lượt poll tiếp theo
@@ -301,8 +311,12 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
   // ── Step 3: Lưu ROI ─────────────────────────────────────────────────────────
 
   const handleSaveRoi = async () => {
-    if (roiConfig.detectionRoi.length < 3 || roiConfig.analysisRoi.length < 3) {
-      setErrorMessage("Cần ít nhất 3 điểm cho cả Detection ROI và Analysis ROI.");
+    if (roiConfig.detectionRoi.length < 3) {
+      setErrorMessage("Vùng Detection ROI cần ít nhất 3 điểm.");
+      return;
+    }
+    if (roiConfig.analysisRoi.length !== 4) {
+      setErrorMessage("Vùng Analysis ROI (dùng để tính tốc độ) bắt buộc phải có đúng 4 điểm theo chiều chuyển động của xe.");
       return;
     }
     setStage("saving_roi");
@@ -316,7 +330,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
         road_length_m: roiConfig.roadLengthM,
         lane_count: roiConfig.laneCount,
       });
-      setStatusMessage("Lệnh lưu ROI đã gửi. Đang chờ Jetson xác nhận...");
+      setStatusMessage("✅ Lệnh lưu ROI đã gửi đến Jetson. Bạn có thể bấm Chạy nhận diện ở Bước 4.");
       setStage("pipeline_control");
     } catch (e: any) {
       setStage("preview_ready");
@@ -328,15 +342,18 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
 
   const handleStartPipeline = async () => {
     setErrorMessage("");
-    setStatusMessage("Đang gửi lệnh khởi động pipeline đến Jetson...");
+    const isCsi = sourceType === "csi";
+    setStatusMessage(`Đang gửi lệnh khởi động nhận diện (${isCsi ? "Camera CSI" : "Video"})...`);
     try {
       await axios.post(`${API_BASE}/nodes/${edgeId}/pipeline/start`, {
-        source_type: "file",
-        source: selectedVideo,
+        source_type: sourceType,
+        source: isCsi ? "csi" : selectedVideo,
         roi_config: "remote",
         display: displayMode,
       });
-      setStatusMessage("✅ Đã gửi lệnh khởi động! Jetson đang kích hoạt pipeline...");
+      setStatusMessage(
+        `✅ Đã gửi lệnh khởi động! Jetson đang kích hoạt pipeline nhận diện ${isCsi ? "Camera CSI" : "Video"} với cấu hình ROI vừa vẽ...`
+      );
       setPipelineRunning(true);
     } catch (e: any) {
       setErrorMessage("Lỗi khởi động pipeline: " + e.message);
@@ -449,36 +466,88 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
           {/* Left Panel: Controls */}
           <div className="w-80 flex flex-col gap-4 p-4 bg-slate-50 border-r border-slate-200 overflow-y-auto shrink-0">
 
-            {/* Step 1: Danh sách video */}
+            {/* Step 1: Chọn nguồn video / camera */}
             <div className="space-y-2 bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
-              <div className="flex items-center gap-2 text-xs font-bold text-slate-700 uppercase tracking-wide">
-                <Video className="w-3.5 h-3.5 text-blue-600" />
-                <span>Bước 1 · Chọn nguồn video</span>
+              <div className="flex items-center justify-between text-xs font-bold text-slate-700 uppercase tracking-wide">
+                <span className="flex items-center gap-2">
+                  <Video className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Bước 1 · Nguồn đầu vào</span>
+                </span>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                  sourceType === "csi" ? "bg-emerald-100 text-emerald-700" : "bg-blue-100 text-blue-700"
+                }`}>
+                  {sourceType === "csi" ? "Camera CSI" : "File Video"}
+                </span>
               </div>
-              <button
-                id="btn-load-videos"
-                onClick={handleLoadVideos}
-                disabled={isLoadingVideos}
-                className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold shadow-xs transition"
-              >
-                {isLoadingVideos ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                Tải danh sách video
-              </button>
 
-              {videos.length > 0 && (
-                <div className="relative">
-                  <select
-                    id="select-video"
-                    className="w-full pl-3 pr-8 py-2 text-xs rounded-xl bg-white border border-slate-300 text-slate-800 appearance-none focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 shadow-xs font-medium"
-                    value={selectedVideo}
-                    onChange={(e) => setSelectedVideo(e.target.value)}
+              {/* Source Mode Selector */}
+              <div className="grid grid-cols-2 p-1 bg-slate-100 rounded-xl gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSourceType("csi");
+                    setSelectedVideo("csi");
+                  }}
+                  className={`py-1.5 px-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                    sourceType === "csi" ? "bg-white text-blue-700 shadow-xs" : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  <span>Camera CSI</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSourceType("file");
+                    setSelectedVideo("");
+                  }}
+                  className={`py-1.5 px-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                    sourceType === "file" ? "bg-white text-blue-700 shadow-xs" : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  <Video className="w-3.5 h-3.5" />
+                  <span>Video file</span>
+                </button>
+              </div>
+
+              {sourceType === "csi" ? (
+                <div className="p-2.5 rounded-xl bg-blue-50/70 border border-blue-100 text-[11px] text-blue-900 space-y-1">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    <span>CSI Camera (nvarguscamerasrc)</span>
+                  </div>
+                  <p className="text-slate-600 text-[10px] leading-tight">
+                    Jetson Nano sẽ chụp frame trực tiếp từ mắt đọc camera phần cứng để bạn vẽ vùng nhận diện ROI thực tế.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2 pt-1">
+                  <button
+                    id="btn-load-videos"
+                    onClick={handleLoadVideos}
+                    disabled={isLoadingVideos}
+                    className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold shadow-xs transition"
                   >
-                    <option value="">-- Chọn video --</option>
-                    {videos.map((v) => (
-                      <option key={v} value={v}>{v}</option>
-                    ))}
-                  </select>
-                  <ChevronDown className="absolute right-3 top-2.5 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                    {isLoadingVideos ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                    Tải danh sách video
+                  </button>
+
+                  {videos.length > 0 && (
+                    <div className="relative">
+                      <select
+                        id="select-video"
+                        className="w-full pl-3 pr-8 py-2 text-xs rounded-xl bg-white border border-slate-300 text-slate-800 appearance-none focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 shadow-xs font-medium"
+                        value={selectedVideo}
+                        onChange={(e) => setSelectedVideo(e.target.value)}
+                      >
+                        <option value="">-- Chọn video --</option>
+                        {videos.map((v) => (
+                          <option key={v} value={v}>{v}</option>
+                        ))}
+                      </select>
+                      <ChevronDown className="absolute right-3 top-2.5 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -492,11 +561,11 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
               <button
                 id="btn-get-preview"
                 onClick={handleGetPreview}
-                disabled={!selectedVideo || isLoadingPreview}
+                disabled={(sourceType === "file" && !selectedVideo) || isLoadingPreview}
                 className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-40 text-white text-xs font-bold shadow-xs transition"
               >
                 {isLoadingPreview ? <Loader2 className="w-4 h-4 animate-spin" /> : <ZoomIn className="w-4 h-4" />}
-                Lấy khung hình preview
+                <span>{sourceType === "csi" ? "📸 Chụp frame từ Camera CSI" : "Lấy khung hình preview"}</span>
               </button>
             </div>
 
@@ -596,18 +665,22 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                   <button
                     id="btn-start-pipeline"
                     onClick={handleStartPipeline}
-                    disabled={pipelineRunning}
-                    className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-bold shadow-xs transition"
+                    disabled={pipelineRunning || (sourceType === "file" && !selectedVideo)}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-bold shadow-xs transition"
+                    title={sourceType === "csi" ? "Khởi động nhận diện CSI với ROI vừa cấu hình" : "Chạy video với ROI vừa cấu hình"}
                   >
-                    <Play className="w-4 h-4" /> Chạy
+                    <Play className="w-4 h-4 fill-current" />
+                    <span>{sourceType === "csi" ? "🚀 Chạy nhận diện CSI" : "Chạy Video"}</span>
                   </button>
+
                   <button
                     id="btn-stop-pipeline"
                     onClick={handleStopPipeline}
                     disabled={!pipelineRunning}
-                    className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-bold shadow-xs transition"
+                    className="w-24 flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-bold shadow-xs transition"
                   >
-                    <Square className="w-4 h-4" /> Dừng
+                    <Square className="w-4 h-4 fill-current" />
+                    <span>Dừng</span>
                   </button>
                 </div>
 

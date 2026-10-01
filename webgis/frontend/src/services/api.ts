@@ -49,6 +49,7 @@ export const api = {
   },
   approveNode: async (edgeId: string, approvalData: {
     name?: string;
+    mac_address?: string;
     latitude: number;
     longitude: number;
     road_name: string;
@@ -67,6 +68,28 @@ export const api = {
     const res = await axios.post(`${API_BASE}/nodes/${edgeId}/approve`, approvalData);
     return res.data;
   },
+  readSpatialInfo: async (edgeId: string) => {
+    const res = await axios.post<{
+      edge_id: string;
+      status: string;
+      message?: string;
+      spatial_info: {
+        edge_id?: string;
+        mac_address?: string;
+        local_ip?: string;
+        camera_id?: string;
+        latitude?: number;
+        longitude?: number;
+        altitude_m?: number;
+        camera_heading?: number;
+        camera_fov?: number;
+        road_name?: string;
+        segment_id?: string;
+        model_version?: string;
+      };
+    }>(`${API_BASE}/nodes/${edgeId}/read-spatial`);
+    return res.data;
+  },
   rejectPendingNode: async (edgeId: string) => {
     const res = await axios.delete(`${API_BASE}/nodes/${edgeId}/pending`);
     return res.data;
@@ -79,6 +102,34 @@ export const api = {
   },
   sendCommand: async (edgeId: string, action: string, params?: any) => {
     const res = await axios.post(`${API_BASE}/commands/send`, { edge_id: edgeId, action, params });
+    return res.data;
+  },
+
+  // ── Pipeline & Remote Control ──────────────────────────────────────────────
+  startCsiPipeline: async (edgeId: string, display: boolean = false) => {
+    const res = await axios.post<{ edge_id: string; command_id: string; status: string; message: string }>(
+      `${API_BASE}/nodes/${edgeId}/pipeline/start-csi`,
+      { display }
+    );
+    return res.data;
+  },
+  startPipeline: async (edgeId: string, payload: { source_type?: string; source?: string; roi_config?: string; display?: boolean }) => {
+    const res = await axios.post<{ edge_id: string; command_id: string; status: string; message: string }>(
+      `${API_BASE}/nodes/${edgeId}/pipeline/start`,
+      payload
+    );
+    return res.data;
+  },
+  stopPipeline: async (edgeId: string) => {
+    const res = await axios.post<{ edge_id: string; command_id: string; status: string; message: string }>(
+      `${API_BASE}/nodes/${edgeId}/pipeline/stop`
+    );
+    return res.data;
+  },
+  getPipelineStatus: async (edgeId: string) => {
+    const res = await axios.get<{ edge_id: string; command_id: string; status: string; message: string }>(
+      `${API_BASE}/nodes/${edgeId}/pipeline/status`
+    );
     return res.data;
   },
 

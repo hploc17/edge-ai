@@ -456,20 +456,19 @@ def build_pipeline(args, source, kind, Gst):
     tracker.set_property('enable-batch-process', 1)
 
     no_display = getattr(args, 'no_display', False)
+    nvvidconv_osd = _make(Gst, 'nvvideoconvert', 'nvvidconv_osd')
+    osd = _make(Gst, 'nvdsosd', 'osd')
+    pipeline.add(nvvidconv_osd)
+    pipeline.add(osd)
+
     if not no_display:
-        nvvidconv_osd = _make(Gst, 'nvvideoconvert', 'nvvidconv_osd')
-        osd = _make(Gst, 'nvdsosd', 'osd')
         # nvegltransform is REQUIRED on Tegra / Jetson Nano between nvdsosd and nveglglessink
         transform = Gst.ElementFactory.make('nvegltransform', 'nvegl_transform')
         sink = _make(Gst, 'nveglglessink', 'sink')
         sink.set_property('sync', 0)
-        pipeline.add(nvvidconv_osd)
-        pipeline.add(osd)
         if transform:
             pipeline.add(transform)
     else:
-        nvvidconv_osd = None
-        osd = None
         transform = None
         sink = _make(Gst, 'fakesink', 'sink')
         sink.set_property('sync', 0)
@@ -481,16 +480,13 @@ def build_pipeline(args, source, kind, Gst):
     # Link the rest of the pipeline: streammux -> pgie -> tracker -> osd -> transform -> sink
     streammux.link(pgie)
     pgie.link(tracker)
-    if osd:
-        tracker.link(nvvidconv_osd)
-        nvvidconv_osd.link(osd)
-        if transform:
-            osd.link(transform)
-            transform.link(sink)
-        else:
-            osd.link(sink)
+    tracker.link(nvvidconv_osd)
+    nvvidconv_osd.link(osd)
+    if transform:
+        osd.link(transform)
+        transform.link(sink)
     else:
-        tracker.link(sink)
+        osd.link(sink)
 
     return pipeline, tracker, streammux, mux_sink, osd
 

@@ -190,16 +190,25 @@ def make_capture_preview_handler(agent_state, upload_preview_fn):
             except Exception as err:
                 raise RuntimeError('Failed to trigger pipeline snapshot: %s' % err)
         else:
-            # Pipeline không chạy: dùng grab_one_frame() trực tiếp
-            _log('capture_preview: pipeline idle, using grab_one_frame()')
+            # Pipeline không chạy: dùng grab_one_frame() hoặc capture_direct_csi_jpeg()
+            _log('capture_preview: pipeline idle, capturing preview frame')
             try:
-                # Import ở đây để tránh import circular và giữ Python 3.6 compat
-                sys.path.insert(0, os.path.join(SCRIPT_DIR, 'tools'))
-                from roi_picker import grab_one_frame
-                frame = grab_one_frame(source_type, source)
-                # Camera đã được release bên trong grab_one_frame()
+                frame = None
+                if source_type == 'csi':
+                    sensor_id = int(os.getenv('SENSOR_ID', os.getenv('CSI_SENSOR_ID', '0')))
+                    raw_jpeg = capture_direct_csi_jpeg(sensor_id=sensor_id, width=1280, height=720, quality=85)
+                    if not raw_jpeg and sensor_id == 0:
+                        raw_jpeg = capture_direct_csi_jpeg(sensor_id=1, width=1280, height=720, quality=85)
+                    if raw_jpeg:
+                        import cv2
+                        frame = cv2.imdecode(np.frombuffer(raw_jpeg, np.uint8), cv2.IMREAD_COLOR)
+
+                if frame is None:
+                    sys.path.insert(0, os.path.join(SCRIPT_DIR, 'tools'))
+                    from roi_picker import grab_one_frame
+                    frame = grab_one_frame(source_type, source)
             except Exception as err:
-                raise RuntimeError('grab_one_frame failed: %s' % err)
+                raise RuntimeError('capture preview failed: %s' % err)
 
             # Upload preview frame
             ok, msg = upload_preview_fn(frame, request_id)
@@ -278,16 +287,34 @@ def make_start_pipeline_handler(agent_state):
             if validated is None:
                 raise ValueError('Invalid or non-existent video file: %s' % source)
             source = validated
+        elif source_type == 'csi':
+            source = 'csi'
 
-        # Chọn file config ROI
+        # Tìm file config ROI khả dụng (ưu tiên local/traffic_nano)
+        default_local = None
+        candidates = [
+            LOCAL_ROI_CONFIG,
+            os.path.join(CONFIGS_DIR, 'roi_traffic_nano.json'),
+            os.path.join(CONFIGS_DIR, 'roi_config.local.json'),
+            os.path.join(CONFIGS_DIR, 'roi_nano.json'),
+        ]
+        for c in candidates:
+            if os.path.isfile(c):
+                default_local = c
+                break
+
         if roi_config_type == 'remote':
-            if not os.path.isfile(REMOTE_ROI_CONFIG):
+            if os.path.isfile(REMOTE_ROI_CONFIG):
+                roi_config_path = REMOTE_ROI_CONFIG
+            elif default_local:
+                roi_config_path = default_local
+            else:
                 raise RuntimeError('Remote ROI config not found. Run set_roi_remote first.')
-            roi_config_path = REMOTE_ROI_CONFIG
         else:
-            if not os.path.isfile(LOCAL_ROI_CONFIG):
-                raise RuntimeError('Local ROI config not found at %s' % LOCAL_ROI_CONFIG)
-            roi_config_path = LOCAL_ROI_CONFIG
+            if default_local:
+                roi_config_path = default_local
+            else:
+                raise RuntimeError('Local ROI config not found in %s' % CONFIGS_DIR)
 
         # Dừng pipeline cũ trước
         old_proc = agent_state.get('pipeline_process')
@@ -296,11 +323,12 @@ def make_start_pipeline_handler(agent_state):
             graceful_stop_pipeline(old_proc)
             time.sleep(1.0)  # Chờ tài nguyên GPU được giải phóng hoàn toàn
 
-        # Dựng command line: main.py nhận --source <file_hoặc_csi> và --roi-config <path>
+        # Dựng command line: tự động nhận diện main3.py nếu có, ngược lại dùng main.py
+        worker_script = 'main3.py' if os.path.exists(os.path.join(SCRIPT_DIR, 'main3.py')) else 'main.py'
         cmd = [
             sys.executable,
-            os.path.join(SCRIPT_DIR, 'main.py'),
-            '--source', source,
+            os.path.join(SCRIPT_DIR, worker_script),
+            '--source', source or 'csi',
             '--roi-config', roi_config_path,
         ]
         if not display:
@@ -308,17 +336,24 @@ def make_start_pipeline_handler(agent_state):
 
         _log('start_pipeline: %s' % ' '.join(cmd))
 
+        env = os.environ.copy()
+        if not env.get('DISPLAY'):
+            env['DISPLAY'] = ':0'
 
+        log_file_path = os.path.join(SCRIPT_DIR, 'pipeline.log')
+        log_f = open(log_file_path, 'a', encoding='utf-8')
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
+            stdout=log_f,
             stderr=subprocess.STDOUT,
             cwd=SCRIPT_DIR,
+            env=env,
         )
 
         agent_state['pipeline_process'] = proc
+        agent_state['pipeline_log_file'] = log_f
         agent_state['pipeline_started_at'] = time.time()
-        _log('start_pipeline: started PID=%d' % proc.pid)
+        _log('start_pipeline: started PID=%d (logging to %s)' % (proc.pid, log_file_path))
 
         return {'pid': proc.pid, 'state': 'running', 'roi_config': roi_config_type, 'display': display}
 
@@ -333,6 +368,12 @@ def make_stop_pipeline_handler(agent_state):
             return 'No pipeline is currently running'
         graceful_stop_pipeline(proc)
         agent_state['pipeline_process'] = None
+        log_f = agent_state.pop('pipeline_log_file', None)
+        if log_f:
+            try:
+                log_f.close()
+            except Exception:
+                pass
         return 'Pipeline stopped successfully'
     return handler
 
@@ -647,13 +688,17 @@ def run_agent():
     from communication.mqtt_client import MQTTPublisher, HeartbeatThread
     from communication.command_router import CommandHandler
     try:
-        from communication.system_metrics import collect_comprehensive_health
+        from communication.system_metrics import collect_comprehensive_health, collect_spatial_info, _get_mac_address
     except (ImportError, AttributeError):
         try:
-            from system_metrics import collect_comprehensive_health
+            from system_metrics import collect_comprehensive_health, collect_spatial_info, _get_mac_address
         except (ImportError, AttributeError):
             def collect_comprehensive_health():
                 return {'general': {'service_status': 'running', 'fallback': True}}
+            def collect_spatial_info():
+                return {'edge_id': edge_id, 'mac_address': '00:00:00:00:00:00'}
+            def _get_mac_address():
+                return '00:00:00:00:00:00'
 
 
     # Trạng thái dùng chung giữa các handler (thay dict thay cho global)
@@ -676,11 +721,13 @@ def run_agent():
     cmd_handler.register('capture_preview', make_capture_preview_handler(agent_state, upload_preview_fn))
     cmd_handler.register('set_roi_remote', make_set_roi_remote_handler())
     cmd_handler.register('start_pipeline', make_start_pipeline_handler(agent_state))
+    cmd_handler.register('start_csi', make_start_pipeline_handler(agent_state))
     cmd_handler.register('stop_pipeline', make_stop_pipeline_handler(agent_state))
     cmd_handler.register('capture_snapshot', make_capture_snapshot_handler(agent_state, backend_url, edge_id, edge_token))
     cmd_handler.register('capture_test_snapshot', make_capture_snapshot_handler(agent_state, backend_url, edge_id, edge_token))
     cmd_handler.register('request_status', make_request_status_handler(agent_state))
     cmd_handler.register('get_health', lambda data: collect_comprehensive_health())
+    cmd_handler.register('get_spatial_info', lambda data: collect_spatial_info())
     # Legacy aliases
     cmd_handler.register('restart_analytics', make_stop_pipeline_handler(agent_state))
     cmd_handler.register('reload_config', lambda data: 'Config reload queued (restart pipeline to apply)')
@@ -691,6 +738,7 @@ def run_agent():
     registration_profile = {
         'event': 'device_registered',
         'edge_id': edge_id,
+        'mac_address': _get_mac_address(),
         'name': os.getenv('NODE_NAME', 'Camera AI Jetson (%s)' % edge_id),
         'device_name': os.getenv('NODE_NAME', 'Camera AI Jetson (%s)' % edge_id),
         'camera_id': os.getenv('CAMERA_ID', 'camera-01'),
@@ -715,23 +763,34 @@ def run_agent():
     _log('Agent is running. Waiting for commands via MQTT...')
     _log('Listening on topic: traffic/%s/command' % edge_id)
 
-    # Vòng lặp chính: giám sát pipeline process và dọn dẹp zombie
+    # Vòng lặp chính: giám sát pipeline process và dọn dẹp
     try:
         while True:
-            time.sleep(5.0)
+            time.sleep(1.0)
             proc = agent_state.get('pipeline_process')
             if proc is not None:
                 retcode = proc.poll()
                 if retcode is not None:
-                    _log('Pipeline PID=%d exited with code=%d' % (proc.pid, retcode))
-                    try:
-                        out, _ = proc.communicate(timeout=1.0)
-                        if out:
-                            _log('Pipeline output:\n%s' % out.decode('utf-8', errors='ignore')[-1500:])
-                    except Exception:
-                        pass
+                    _log('Pipeline PID=%d finished/exited with code=%d' % (proc.pid, retcode))
                     agent_state['pipeline_process'] = None
                     agent_state['pipeline_started_at'] = None
+                    log_f = agent_state.pop('pipeline_log_file', None)
+                    if log_f:
+                        try:
+                            log_f.close()
+                        except Exception:
+                            pass
+                    # Bắn MQTT thông báo pipeline đã hoàn thành để WebGIS cập nhật UI ngay lập tức
+                    try:
+                        publisher.publish_command_result(
+                            command_id='auto-stop',
+                            action='stop_pipeline',
+                            status='completed',
+                            message='Video playback finished (code %d). Display window closed.' % retcode
+                        )
+                        _log('Notified WebGIS that pipeline completed automatically.')
+                    except Exception as e:
+                        _log('Failed to notify auto-stop via MQTT: %s' % e)
 
     except KeyboardInterrupt:
         _log('Agent shutting down...')

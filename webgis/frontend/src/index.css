@@ -66,6 +66,93 @@
   transition: transform 0.3s ease;
 }
 
+/* Selected Node Marker Highlight */
+.pulsing-marker.selected-node-marker {
+  z-index: 50 !important;
+}
+
+.pulsing-marker.selected-node-marker .pulsing-marker-core {
+  border: 3px solid #ffffff !important;
+  transform: scale(1.55) !important;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.9), 0 0 24px 8px var(--marker-glow-color, rgba(16, 185, 129, 0.85)) !important;
+}
+
+.pulsing-marker.selected-node-marker .pulsing-marker-ring {
+  animation: pulse-ring-selected 1.6s cubic-bezier(0.215, 0.61, 0.355, 1) infinite !important;
+}
+
+@keyframes pulse-ring-selected {
+  0% {
+    transform: scale(0.8);
+    opacity: 1;
+  }
+  65% {
+    transform: scale(2.6);
+    opacity: 0.35;
+  }
+  100% {
+    transform: scale(3.2);
+    opacity: 0;
+  }
+}
+
+/* Floating Name Badge above Selected Marker */
+.node-floating-badge {
+  position: absolute;
+  top: -36px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(15, 23, 42, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #f8fafc;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  animation: badge-pop 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  z-index: 60;
+}
+
+.node-floating-badge::after {
+  content: "";
+  position: absolute;
+  bottom: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 5px solid rgba(15, 23, 42, 0.92);
+}
+
+.node-badge-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+@keyframes badge-pop {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(6px) scale(0.85);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
 /* Clean White Light Theme Glassmorphism */
 .glass-panel {
   background: rgba(255, 255, 255, 0.94);

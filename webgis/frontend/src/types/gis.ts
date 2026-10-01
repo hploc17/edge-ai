@@ -12,6 +12,7 @@ export interface GeoJSONFeatureCollection<G, P> {
 export interface NodeProperties {
   edge_id: string;
   name: string;
+  mac_address?: string;
   camera_id?: string;
   segment_id?: string;
   road_name?: string;
@@ -51,6 +52,8 @@ export interface NodeDetail extends NodeProperties {
   road_length_m?: number;
   road_width_m?: number;
   stopped_vehicle_count?: number;
+  current_vehicle_count?: number;
+  osm_road_name?: string;
   density_veh_per_km_lane?: number;
   counts_by_class?: {
     motorcycle?: number;  // Chuẩn WebGIS (sau khi normalize ở backend)
@@ -143,6 +146,7 @@ export interface CongestionSnapshot {
 /** Thiết bị Jetson đã kết nối MQTT nhưng chưa được Admin phê duyệt vị trí */
 export interface PendingNodeInfo {
   edge_id: string;
+  mac_address?: string;
   name: string;
   camera_id?: string;
   model_version?: string;

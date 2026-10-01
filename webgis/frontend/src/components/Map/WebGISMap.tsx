@@ -6,6 +6,7 @@ interface WebGISMapProps {
   nodesGeoJSON: GeoJSONFeatureCollection<any, any> | null;
   segmentsGeoJSON: GeoJSONFeatureCollection<any, any> | null;
   selectedNodeId: string | null;
+  selectNodeTrigger?: number;
   onSelectNode: (edgeId: string) => void;
   basemap: string;
   layersConfig: {
@@ -142,10 +143,28 @@ const BASEMAP_STYLES: Record<string, any> = {
   }
 };
 
+// Calculate optical viewport padding to center node avoiding UI panels (Drawer & Navbar)
+const getCameraPadding = (isDrawerOpen: boolean = true) => {
+  if (!isDrawerOpen) {
+    return { top: 0, right: 0, bottom: 0, left: 0 };
+  }
+  const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
+  if (isMobile) {
+    return { top: 80, right: 20, bottom: 380, left: 20 };
+  }
+  return {
+    top: 80,    // Top Navbar height (64px) + safe buffer
+    right: 420, // Drawer width (384px) + margin (12px) + safe breathing space (24px)
+    bottom: 40,
+    left: 40
+  };
+};
+
 export const WebGISMap: React.FC<WebGISMapProps> = ({
   nodesGeoJSON,
   segmentsGeoJSON,
   selectedNodeId,
+  selectNodeTrigger,
   onSelectNode,
   basemap = "google",
   layersConfig,
@@ -155,8 +174,13 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
+  const activePopupRef = useRef<maplibregl.Popup | null>(null);
   const segmentsGeoJSONRef = useRef(segmentsGeoJSON);
   segmentsGeoJSONRef.current = segmentsGeoJSON;
+  const nodesGeoJSONRef = useRef(nodesGeoJSON);
+  nodesGeoJSONRef.current = nodesGeoJSON;
+  const isPickingLocationRef = useRef(isPickingLocation);
+  isPickingLocationRef.current = isPickingLocation;
 
   const addTrafficLayers = (map: maplibregl.Map) => {
     const geoData = segmentsGeoJSONRef.current || segmentsGeoJSON || { type: "FeatureCollection", features: [] };
@@ -276,48 +300,61 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
         if (!isPickingLocation) map.getCanvas().style.cursor = "";
       });
 
-      // Interactive Popup on Road Segment Click
-      map.on("click", "traffic-segments-core", (e) => {
-        if (isPickingLocation || !e.features || !e.features[0]) return;
-        const p = e.features[0].properties as any;
-        const statusText = p.traffic_status === "CONGESTED" ? "ÙN TẮC" : (p.traffic_status === "SLOW" ? "ĐÔNG XE" : "THÔNG THOÁNG");
-        
-        new maplibregl.Popup({ closeButton: true, closeOnClick: true, className: "road-popup" })
-          .setLngLat(e.lngLat)
-          .setHTML(`
-            <div style="font-family: Inter, sans-serif; padding: 6px 4px; color: #1e293b; min-width: 220px;">
-              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px;">
-                <strong style="font-size: 13px; color: #0f172a;">${p.road_name}</strong>
-                <span style="font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 6px; background: ${p.traffic_color}25; color: ${p.traffic_color};">
-                  ${statusText}
-                </span>
+        // Interactive Popup on Road Segment Click
+        map.on("click", "traffic-segments-core", (e) => {
+          if (isPickingLocationRef.current || !e.features || !e.features[0]) return;
+          const p = e.features[0].properties as any;
+          const statusText = p.traffic_status === "CONGESTED" ? "ÙN TẮC" : (p.traffic_status === "SLOW" ? "ĐÔNG XE" : "THÔNG THOÁNG");
+          
+          // Close existing popup if any
+          if (activePopupRef.current) {
+            activePopupRef.current.remove();
+            activePopupRef.current = null;
+          }
+
+          const popup = new maplibregl.Popup({ closeButton: true, closeOnClick: true, className: "road-popup" })
+            .setLngLat(e.lngLat)
+            .setHTML(`
+              <div style="font-family: Inter, sans-serif; padding: 6px 4px; color: #1e293b; min-width: 220px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px;">
+                  <strong style="font-size: 13px; color: #0f172a;">${p.road_name}</strong>
+                  <span style="font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 6px; background: ${p.traffic_color}25; color: ${p.traffic_color};">
+                    ${statusText}
+                  </span>
+                </div>
+                <div style="font-size: 11px; line-height: 1.6; color: #334155; background: #f8fafc; padding: 8px; border-radius: 8px; border: 1px solid #e2e8f0;">
+                  <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                    <span style="color: #64748b;">📏 Chiều dài thực tế:</span>
+                    <b style="color: #059669; font-family: monospace;">${p.road_length_m || 450} m</b>
+                  </div>
+                  <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                    <span style="color: #64748b;">📐 Chiều rộng mặt đường:</span>
+                    <b style="color: #2563eb; font-family: monospace;">${p.road_width_m || 16.0} m</b>
+                  </div>
+                  <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                    <span style="color: #64748b;">🛣️ Quy mô mặt cắt:</span>
+                    <b>${p.lane_count || 4} làn xe</b>
+                  </div>
+                  <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+                    <span style="color: #64748b;">⚡ Vận tốc trung bình:</span>
+                    <b>${p.avg_speed_kmh} km/h</b>
+                  </div>
+                  <div style="display: flex; justify-content: space-between;">
+                    <span style="color: #64748b;">🚗 Lượng xe hiện tại:</span>
+                    <b>${p.vehicle_count} xe</b>
+                  </div>
+                </div>
               </div>
-              <div style="font-size: 11px; line-height: 1.6; color: #334155; background: #f8fafc; padding: 8px; border-radius: 8px; border: 1px solid #e2e8f0;">
-                <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-                  <span style="color: #64748b;">📏 Chiều dài thực tế:</span>
-                  <b style="color: #059669; font-family: monospace;">${p.road_length_m || 450} m</b>
-                </div>
-                <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-                  <span style="color: #64748b;">📐 Chiều rộng mặt đường:</span>
-                  <b style="color: #2563eb; font-family: monospace;">${p.road_width_m || 16.0} m</b>
-                </div>
-                <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-                  <span style="color: #64748b;">🛣️ Quy mô mặt cắt:</span>
-                  <b>${p.lane_count || 4} làn xe</b>
-                </div>
-                <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-                  <span style="color: #64748b;">⚡ Vận tốc trung bình:</span>
-                  <b>${p.avg_speed_kmh} km/h</b>
-                </div>
-                <div style="display: flex; justify-content: space-between;">
-                  <span style="color: #64748b;">🚗 Lượng xe hiện tại:</span>
-                  <b>${p.vehicle_count} xe</b>
-                </div>
-              </div>
-            </div>
-          `)
-          .addTo(map);
-      });
+            `)
+            .addTo(map);
+
+          activePopupRef.current = popup;
+          popup.on("close", () => {
+            if (activePopupRef.current === popup) {
+              activePopupRef.current = null;
+            }
+          });
+        });
     });
 
     mapRef.current = map;
@@ -365,6 +402,47 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
     if (map.getLayer("traffic-segments-dash")) map.setLayoutProperty("traffic-segments-dash", "visibility", vis);
   }, [layersConfig.segments]);
 
+  // Smoothly Fly and Center Selected Node on Map with Camera Padding (Anti-Jitter)
+  // IMPORTANT: nodesGeoJSON is intentionally accessed via nodesGeoJSONRef.current to avoid
+  // re-triggering flyTo every few seconds on WebSocket telemetry updates!
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const map = mapRef.current;
+
+    // When drawer closes (selectedNodeId becomes null), smoothly ease padding back to zero
+    if (!selectedNodeId) {
+      map.easeTo({
+        padding: { top: 0, right: 0, bottom: 0, left: 0 },
+        duration: 400
+      });
+      return;
+    }
+
+    // Automatically close any open road segment popups so they don't cover the node
+    if (activePopupRef.current) {
+      activePopupRef.current.remove();
+      activePopupRef.current = null;
+    }
+
+    const geoData = nodesGeoJSONRef.current;
+    if (!geoData) return;
+
+    const feature = geoData.features.find((f) => f.properties.edge_id === selectedNodeId);
+    if (!feature || !feature.geometry || !feature.geometry.coordinates) return;
+
+    const coords = feature.geometry.coordinates as [number, number];
+    const currentZoom = map.getZoom();
+    const targetZoom = Math.max(currentZoom, 17.2);
+
+    map.flyTo({
+      center: coords,
+      zoom: targetZoom,
+      padding: getCameraPadding(true),
+      duration: 1200,
+      essential: true
+    });
+  }, [selectedNodeId, selectNodeTrigger]);
+
   // Render & Update Pulsing Dot Markers for Nodes
   useEffect(() => {
     if (!mapRef.current) return;
@@ -381,7 +459,9 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
       const isSelected = selectedNodeId === props.edge_id;
 
       const el = document.createElement("div");
-      el.className = "pulsing-marker";
+      el.className = isSelected ? "pulsing-marker selected-node-marker" : "pulsing-marker";
+      el.style.zIndex = isSelected ? "50" : "10";
+      el.style.setProperty("--marker-glow-color", props.marker_color);
 
       // Pulsing outer ring
       const ring = document.createElement("div");
@@ -393,12 +473,23 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
       core.className = "pulsing-marker-core";
       core.style.backgroundColor = props.marker_color;
       if (isSelected) {
-        core.style.boxShadow = `0 0 16px 4px ${props.marker_color}`;
-        core.style.transform = "scale(1.45)";
+        core.style.boxShadow = `0 0 0 3px rgba(255, 255, 255, 0.9), 0 0 24px 8px ${props.marker_color}`;
+        core.style.transform = "scale(1.55)";
       }
 
       el.appendChild(ring);
       el.appendChild(core);
+
+      // Floating Name Badge above Selected Marker
+      if (isSelected) {
+        const badge = document.createElement("div");
+        badge.className = "node-floating-badge";
+        badge.innerHTML = `
+          <span class="node-badge-dot" style="background-color: ${props.marker_color};"></span>
+          <span class="node-badge-text">${props.name || props.edge_id}</span>
+        `;
+        el.appendChild(badge);
+      }
 
       // Camera FOV cone / orientation indicator
       if (layersConfig.fovCones && props.heading !== undefined) {
@@ -415,6 +506,10 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
       }
 
       el.addEventListener("click", (e) => {
+        // If user is in location picking mode, let the map click handler handle it
+        if (isPickingLocationRef.current) {
+          return;
+        }
         e.stopPropagation();
         onSelectNode(props.edge_id);
       });

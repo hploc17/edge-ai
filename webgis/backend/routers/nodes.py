@@ -33,6 +33,7 @@ router = APIRouter(prefix="/api/v1/nodes", tags=["Node Fleet Management"])
 class NodeCreateUpdate(BaseModel):
     """Model dùng khi Admin tạo/sửa node thủ công."""
     edge_id: Optional[str] = None
+    mac_address: Optional[str] = None
     name: str
     camera_id: Optional[str] = "camera-01"
     segment_id: Optional[str] = None
@@ -55,6 +56,7 @@ class NodeCreateUpdate(BaseModel):
 class NodeApproveRequest(BaseModel):
     """Model dùng khi Admin phê duyệt một thiết bị từ hàng chờ."""
     name: Optional[str] = None
+    mac_address: Optional[str] = None
     latitude: float
     longitude: float
     road_name: str

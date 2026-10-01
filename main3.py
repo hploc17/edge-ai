@@ -434,7 +434,8 @@ def main():
     current_fps = [0.0]
 
     if not args.no_mqtt:
-        mqtt_publisher = MQTTPublisher(command_callback=None)
+        pipeline_client_id = os.getenv('MQTT_PIPELINE_CLIENT_ID', '%s-pipeline' % os.getenv('EDGE_ID', 'edge-01'))
+        mqtt_publisher = MQTTPublisher(command_callback=None, client_id=pipeline_client_id)
         cmd_handler = CommandHandler(mqtt_publisher)
 
         # Gói 1: Profile & GIS Registration cho WebGIS
@@ -453,7 +454,7 @@ def main():
                 'fov': CAMERA_FOV,
             },
             'spatial_config': {
-                'road_length_m': float(traffic_config.get('road_length_m', 20.0)),
+                'road_length_m': float(traffic_config.get('road_length_m', 50.0)),
                 'road_width_m': float(traffic_config.get('road_width_m', 7.0)),
                 'lane_count': int(traffic_config.get('lane_count', 2)),
                 'homography_calibrated': True,
@@ -708,6 +709,8 @@ def main():
             # inflates the denominator when computing stopped_ratio.
             analysis_presence = dict(presence)
             analysis_presence['current_total'] = len(analysis_objects)
+            analysis_presence['current_by_class'] = dict(raw_counts)
+            analysis_presence['current_track_ids'] = [int(obj['track_id']) for obj in analysis_objects]
 
             speed_by_class = speed_estimator.class_speed_stats(
                 speeds, analysis_objects
@@ -791,19 +794,19 @@ def main():
     snapshot_probe_id = None
     if snapshot_service is not None and kind == 'csi':
         if osd is None:
-            raise RuntimeError(
-                'CSI snapshot requires the RGBA/OSD branch. Remove '
-                '--no-display or update build_pipeline to keep OSD when '
-                'snapshot is enabled.'
+            print(
+                '[WARNING] CSI snapshot requires the RGBA/OSD branch. Snapshot probe disabled.',
+                file=sys.stderr
             )
-        snapshot_pad, snapshot_probe_id = attach_snapshot_probe(
-            osd,
-            snapshot_service,
-            get_metrics=lambda frame_meta: snapshot_context_by_source.get(
-                int(frame_meta.source_id)
-            ),
-            source_id=0
-        )
+        else:
+            snapshot_pad, snapshot_probe_id = attach_snapshot_probe(
+                osd,
+                snapshot_service,
+                get_metrics=lambda frame_meta: snapshot_context_by_source.get(
+                    int(frame_meta.source_id)
+                ),
+                source_id=0
+            )
 
     def on_bus_message(_bus, message):
         if message.type == Gst.MessageType.ERROR:

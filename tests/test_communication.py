@@ -184,3 +184,43 @@ def test_mqtt_publisher_registration_and_health():
     health_msg = [p for p in mock_client.published if 'device-health' in p['topic']][0]
     assert 'cmd-999' in health_msg['payload']
     assert '45' in health_msg['payload']
+
+
+def test_collect_spatial_info():
+    from communication.system_metrics import collect_spatial_info
+    info = collect_spatial_info()
+    assert 'mac_address' in info
+    assert 'edge_id' in info
+    assert 'latitude' in info
+    assert 'longitude' in info
+    assert 'camera_heading' in info
+    assert 'camera_fov' in info
+
+
+def test_command_handler_get_spatial_info():
+    import time
+    from communication.system_metrics import collect_spatial_info
+    mock_pub = MockMQTTPublisher()
+    handler = CommandHandler(mock_pub)
+    handler.register('get_spatial_info', lambda data: collect_spatial_info())
+
+    cmd_payload = {
+        'action': 'get_spatial_info',
+        'command_id': 'spat-123'
+    }
+    handler.handle(cmd_payload)
+    time.sleep(0.1)
+
+    assert len(mock_pub.command_results) == 1
+    assert mock_pub.command_results[0]['status'] == 'completed'
+    assert isinstance(mock_pub.command_results[0]['message'], dict)
+    assert 'mac_address' in mock_pub.command_results[0]['message']
+
+
+def test_data_store_mac_lookup():
+    from webgis.backend.services.data_store import DataStore
+    ds = DataStore()
+    node = ds.get_node_by_mac("00:04:4B:E7:44:E8")
+    assert node is not None
+    assert node['edge_id'] == 'edge-01'
+

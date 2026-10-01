@@ -55,7 +55,7 @@ class SetRoiRequest(BaseModel):
     detection_roi: List[List[float]]   # [[x, y], ...] normalized [0.0-1.0]
     analysis_roi: List[List[float]]    # [[x, y], ...] normalized [0.0-1.0]
     road_width_m: float = 7.0
-    road_length_m: float = 20.0
+    road_length_m: float = 50.0
     lane_count: int = 2
 
 
@@ -379,6 +379,35 @@ async def start_pipeline(edge_id: str, req: StartPipelineRequest):
     }
 
 
+class StartCsiRequest(BaseModel):
+    display: bool = False
+
+
+@router.post("/api/v1/nodes/{edge_id}/pipeline/start-csi")
+async def start_csi_pipeline(edge_id: str, req: Optional[StartCsiRequest] = None):
+    """Khởi động pipeline nhận diện thời gian thực bằng Camera CSI trên Jetson Nano."""
+    _check_node_exists(edge_id)
+    display = req.display if req is not None else False
+    command_id = _new_command_id("start-csi")
+    mqtt_service.publish_command(
+        edge_id=edge_id,
+        action="start_pipeline",
+        command_id=command_id,
+        params={
+            "source_type": "csi",
+            "source": "csi",
+            "roi_config": "local",
+            "display": display,
+        }
+    )
+    return {
+        "edge_id": edge_id,
+        "command_id": command_id,
+        "status": "sent",
+        "message": f"Đã gửi lệnh kích hoạt nhận diện Camera CSI (display={display}) đến Jetson Nano",
+    }
+
+
 # ── POST /api/v1/nodes/{edge_id}/pipeline/stop ───────────────────────────────
 
 @router.post("/api/v1/nodes/{edge_id}/pipeline/stop")
@@ -409,3 +438,63 @@ async def get_pipeline_status(edge_id: str):
         "status": "sent",
         "message": "request_status sent. Listen on WebSocket for command-result.",
     }
+
+
+# ── POST /api/v1/nodes/{edge_id}/read-spatial ─────────────────────────────────
+
+@router.post("/api/v1/nodes/{edge_id}/read-spatial")
+async def read_device_spatial_info(edge_id: str):
+    """Yêu cầu Jetson gửi lại toàn bộ thông số không gian và địa chỉ MAC phần cứng.
+
+    Áp dụng cho cả thiết bị pending lẫn approved node.
+    Gửi lệnh get_spatial_info qua MQTT và chờ kết quả tối đa 8 giây.
+    """
+    node = store.get_node(edge_id)
+    pending = store.get_pending_node(edge_id)
+    if not node and not pending:
+        raise HTTPException(status_code=404, detail=f"Device '{edge_id}' not found in approved or pending fleet")
+
+    command_id = _new_command_id("spat")
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+
+    async with _pending_lock:
+        _pending_commands[command_id] = {
+            "action": "get_spatial_info",
+            "future": future,
+            "edge_id": edge_id,
+            "loop": loop,
+        }
+
+    mqtt_service.publish_command(edge_id=edge_id, action="get_spatial_info", command_id=command_id)
+
+    try:
+        result = await asyncio.wait_for(future, timeout=8.0)
+        msg_data = result.get("message", {})
+        if isinstance(msg_data, str):
+            import json as _json
+            try:
+                msg_data = _json.loads(msg_data)
+            except Exception:
+                msg_data = {"raw": msg_data}
+        return {"edge_id": edge_id, "status": "success", "spatial_info": msg_data}
+    except asyncio.TimeoutError:
+        async with _pending_lock:
+            _pending_commands.pop(command_id, None)
+        fallback_data = node or pending or {}
+        return {
+            "edge_id": edge_id,
+            "status": "timeout_fallback",
+            "message": "Thiết bị không phản hồi trong 8s, trả về thông tin đã lưu.",
+            "spatial_info": {
+                "edge_id": edge_id,
+                "mac_address": fallback_data.get("mac_address"),
+                "latitude": fallback_data.get("latitude"),
+                "longitude": fallback_data.get("longitude"),
+                "altitude_m": fallback_data.get("altitude_m", 10.0),
+                "camera_heading": fallback_data.get("camera_heading", 0.0),
+                "camera_fov": fallback_data.get("camera_fov", 65.0),
+                "road_name": fallback_data.get("road_name", ""),
+            }
+        }
+

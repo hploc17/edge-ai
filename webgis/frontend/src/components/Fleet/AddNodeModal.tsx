@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { X, MapPin, Plus, Crosshair, Search, CheckCircle, AlertTriangle, Loader2, Route, ChevronDown, ChevronUp } from "lucide-react";
 import { api } from "../../services/api";
-import type { OSMRoadInfo } from "../../services/api";
+import type { OSMRoadInfo } from "../../types/gis";
 
 interface AddNodeModalProps {
   onClose: () => void;
@@ -83,7 +83,7 @@ export const AddNodeModal: React.FC<AddNodeModalProps> = ({
         setOsmApplied(true);
         setShowOsmDetail(true);
       } else {
-        setOsmError(info.message);
+        setOsmError(info.message || "Không tìm thấy dữ liệu đoạn đường.");
       }
     } catch (err: any) {
       setOsmError("Không thể kết nối OpenStreetMap. Kiểm tra kết nối Internet.");

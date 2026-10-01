@@ -23,7 +23,8 @@ class MQTTService:
 
     def start(self, event_loop: asyncio.AbstractEventLoop):
         self._loop = event_loop
-        self._client = mqtt_lib.Client(client_id=f"{MQTT_CLIENT_ID}-{uuid.uuid4().hex[:4]}")
+        # Dùng Client ID cố định và clean_session=True để không làm tăng rác session trên MQTT Broker (HiveMQ)
+        self._client = mqtt_lib.Client(client_id=MQTT_CLIENT_ID, clean_session=True)
         self._client.username_pw_set(MQTT_USER, MQTT_PASS)
 
         if MQTT_PORT == 8883:
@@ -85,53 +86,76 @@ class MQTTService:
             edge_id = parts[1]
             subtopic = parts[2]
 
+            # Trích xuất địa chỉ MAC phần cứng nếu có trong payload
+            mac_addr = payload.get("mac_address")
+            if not mac_addr and isinstance(payload.get("latest_health"), dict):
+                mac_addr = payload["latest_health"].get("network", {}).get("mac_address")
+            if not mac_addr and isinstance(payload.get("network"), dict):
+                mac_addr = payload["network"].get("mac_address")
+            if mac_addr:
+                mac_addr = str(mac_addr).strip().upper()
+                payload["mac_address"] = mac_addr
+
             if subtopic == "telemetry":
-                if store.get_node(edge_id):
-                    # Node đã được Admin phê duyệt → cập nhật telemetry bình thường
-                    store.update_telemetry(edge_id, payload)
+                approved_node = (store.get_node_by_mac(mac_addr) if mac_addr else None) or store.get_node(edge_id)
+                if approved_node:
+                    target_id = approved_node["edge_id"]
+                    store.update_telemetry(target_id, payload)
                     self._broadcast_async({
                         "type": "telemetry",
-                        "edge_id": edge_id,
+                        "edge_id": target_id,
                         "data": payload
                     })
                 else:
                     # Node CHƯA được phê duyệt → chỉ cập nhật hàng chờ pending
                     is_new = edge_id not in store.pending_nodes
-                    store.touch_pending(edge_id, payload) if not is_new else store.add_pending_node(edge_id, payload)
+                    store.add_pending_node(edge_id, payload) if is_new else store.touch_pending(edge_id, payload)
                     if is_new:
-                        print(f"[MQTT] New unapproved device detected from telemetry: {edge_id}")
+                        print(f"[MQTT] New unapproved device detected from telemetry: {edge_id} (MAC: {mac_addr})")
                         self._broadcast_async({
                             "type": "device_pending",
                             "edge_id": edge_id,
+                            "mac_address": mac_addr,
+                            "require_setup": True,
                             "node": store.get_pending_node(edge_id),
                             "pending_count": len(store.pending_nodes)
                         })
 
             elif subtopic == "registration":
                 payload["edge_id"] = edge_id
-                if store.get_node(edge_id):
-                    # Node đã được duyệt trước đây → chỉ cập nhật thông tin kỹ thuật (không thay đổi tọa độ Admin đã set)
-                    node = store.nodes[edge_id]
+                # 1. Tìm kiếm trong danh sách approved theo MAC trước (ưu tiên phần cứng) hoặc theo edge_id
+                approved_node = store.get_node_by_mac(mac_addr) if mac_addr else None
+                if not approved_node:
+                    approved_node = store.get_node(edge_id)
+
+                if approved_node:
+                    approved_edge_id = approved_node["edge_id"]
+                    node = store.nodes[approved_edge_id]
+                    # Giữ nguyên toàn bộ tọa độ và thông số không gian Admin đã cấu hình/lưu
+                    if mac_addr:
+                        node["mac_address"] = mac_addr
                     for key in ("model_version", "camera_id"):
                         if payload.get(key):
                             node[key] = payload[key]
                     node["last_seen"] = datetime.now().isoformat()
                     node["status"] = "online"
                     store._persist_nodes()
-                    print(f"[MQTT] Approved node {edge_id} re-connected (registration).")
+                    print(f"[MQTT] Approved node recognized (MAC: {mac_addr or 'N/A'}, ID: {approved_edge_id}). Loaded saved spatial config.")
                     self._broadcast_async({
                         "type": "node_registered",
-                        "edge_id": edge_id,
-                        "node": store.get_node(edge_id)
+                        "edge_id": approved_edge_id,
+                        "node": store.get_node(approved_edge_id)
                     })
                 else:
-                    # Node chưa được duyệt → vào hàng chờ
+                    # Node chưa từng được lưu/phê duyệt trong danh sách thiết bị → vào hàng chờ & yêu cầu mở màn hình setup
                     is_new = edge_id not in store.pending_nodes
                     store.add_pending_node(edge_id, payload) if is_new else store.touch_pending(edge_id, payload)
-                    print(f"[MQTT] Registration received for unapproved device: {edge_id} (pending approval)")
+                    print(f"[MQTT] Registration received for unconfigured device: {edge_id} (MAC: {mac_addr or 'unknown'}). Setup required.")
                     self._broadcast_async({
                         "type": "device_pending",
                         "edge_id": edge_id,
+                        "mac_address": mac_addr,
+                        "require_setup": True,
                         "node": store.get_pending_node(edge_id),
                         "pending_count": len(store.pending_nodes)
                     })
@@ -146,31 +170,37 @@ class MQTTService:
                 })
 
             elif subtopic == "heartbeat":
-                node = store.get_node(edge_id)
-                if node:
-                    # Node đã được phê duyệt → cập nhật trạng thái online
+                approved_node = (store.get_node_by_mac(mac_addr) if mac_addr else None) or store.get_node(edge_id)
+                if approved_node:
+                    target_id = approved_node["edge_id"]
+                    node = store.nodes[target_id]
                     node["status"] = payload.get("status", "online")
                     node["last_seen"] = payload.get("timestamp") or time.strftime("%Y-%m-%dT%H:%M:%S+07:00")
+                    if mac_addr and not node.get("mac_address"):
+                        node["mac_address"] = mac_addr
+                        store._persist_nodes()
                     self._broadcast_async({
                         "type": "heartbeat",
-                        "edge_id": edge_id,
+                        "edge_id": target_id,
                         "status": node["status"],
                         "last_seen": node["last_seen"]
                     })
                 else:
-                    # Node CHƯA được phê duyệt → cập nhật pending
                     is_new = edge_id not in store.pending_nodes
                     hb_data = {
                         "edge_id": edge_id,
+                        "mac_address": mac_addr,
                         "camera_id": payload.get("camera_id", "unknown"),
                         "status": payload.get("status", "online"),
                     }
                     store.add_pending_node(edge_id, hb_data) if is_new else store.touch_pending(edge_id, payload)
                     if is_new:
-                        print(f"[MQTT] New unapproved device detected from heartbeat: {edge_id}")
+                        print(f"[MQTT] New unapproved device detected from heartbeat: {edge_id} (MAC: {mac_addr})")
                         self._broadcast_async({
                             "type": "device_pending",
                             "edge_id": edge_id,
+                            "mac_address": mac_addr,
+                            "require_setup": True,
                             "node": store.get_pending_node(edge_id),
                             "pending_count": len(store.pending_nodes)
                         })

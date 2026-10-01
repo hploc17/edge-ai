@@ -1,8 +1,8 @@
-import React from "react";
+import React, { useState } from "react";
 import ReactECharts from "echarts-for-react";
-import { X, Gauge, Car, AlertTriangle, Cpu, History, Radio, Ruler, Terminal, Camera } from "lucide-react";
+import { X, Gauge, Car, AlertTriangle, Cpu, History, Radio, Ruler, Terminal, Camera, Play, Square, Loader2 } from "lucide-react";
 import type { NodeDetail } from "../../types/gis";
-import { API_HOST_URL } from "../../services/api";
+import { API_HOST_URL, api } from "../../services/api";
 
 interface NodeDashboardDrawerProps {
   node: NodeDetail | null;
@@ -22,6 +22,45 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
   onOpenCamera
 }) => {
   if (!node) return null;
+
+  const [pipelineLoading, setPipelineLoading] = useState<"csi" | "stop" | null>(null);
+  const [feedbackMsg, setFeedbackMsg] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
+
+  const handleStartCsi = async () => {
+    if (!node) return;
+    setPipelineLoading("csi");
+    setFeedbackMsg({ text: "Đang gửi lệnh nhận diện Camera CSI đến Jetson...", type: "info" });
+    try {
+      const res = await api.startCsiPipeline(node.edge_id);
+      setFeedbackMsg({ text: res.message || "Đã gửi lệnh kích hoạt Camera CSI thành công!", type: "success" });
+    } catch (err: any) {
+      const errMsg = err?.response?.data?.detail || err.message || "Lỗi gửi lệnh";
+      setFeedbackMsg({ text: `Lỗi: ${errMsg}`, type: "error" });
+    } finally {
+      setPipelineLoading(null);
+      setTimeout(() => {
+        setFeedbackMsg((prev) => (prev?.type === "success" ? null : prev));
+      }, 5000);
+    }
+  };
+
+  const handleStopPipeline = async () => {
+    if (!node) return;
+    setPipelineLoading("stop");
+    setFeedbackMsg({ text: "Đang gửi lệnh dừng pipeline...", type: "info" });
+    try {
+      const res = await api.stopPipeline(node.edge_id);
+      setFeedbackMsg({ text: res.message || "Đã gửi lệnh dừng pipeline!", type: "success" });
+    } catch (err: any) {
+      const errMsg = err?.response?.data?.detail || err.message || "Lỗi dừng pipeline";
+      setFeedbackMsg({ text: `Lỗi: ${errMsg}`, type: "error" });
+    } finally {
+      setPipelineLoading(null);
+      setTimeout(() => {
+        setFeedbackMsg((prev) => (prev?.type === "success" ? null : prev));
+      }, 5000);
+    }
+  };
 
   const counts = node.counts_by_class || {};
   // Hỗ trợ cả hai định dạng: 'motorcycle' (chuẩn WebGIS) và 'motorbike' (raw YOLO/Jetson COCO label)
@@ -305,12 +344,58 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
 
       {/* Drawer Action Footer */}
       <div className="p-3 bg-slate-50/90 border-t border-slate-200 flex flex-col gap-2">
+        {/* Quick CSI Pipeline Control */}
+        <div className="grid grid-cols-3 gap-1.5">
+          <button
+            id="btn-start-csi"
+            onClick={handleStartCsi}
+            disabled={pipelineLoading !== null}
+            className="col-span-2 flex items-center justify-center space-x-1.5 py-2.5 px-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white text-xs font-bold transition shadow-md shadow-blue-500/20 disabled:opacity-50"
+            title="Gửi lệnh kích hoạt pipeline main3.py với Camera CSI trực tiếp"
+          >
+            {pipelineLoading === "csi" ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Play className="w-3.5 h-3.5 fill-current" />
+            )}
+            <span>📹 Nhận diện bằng CSI</span>
+          </button>
+
+          <button
+            id="btn-stop-pipeline"
+            onClick={handleStopPipeline}
+            disabled={pipelineLoading !== null}
+            className="flex items-center justify-center space-x-1 py-2.5 px-2 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-300 text-rose-700 text-xs font-bold transition shadow-sm disabled:opacity-50"
+            title="Dừng tiến trình nhận diện trên Jetson"
+          >
+            {pipelineLoading === "stop" ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Square className="w-3 h-3 fill-current" />
+            )}
+            <span>Dừng AI</span>
+          </button>
+        </div>
+
+        {feedbackMsg && (
+          <div className={`text-[11px] px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 font-medium animate-in fade-in duration-200 ${
+            feedbackMsg.type === "success"
+              ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+              : feedbackMsg.type === "error"
+              ? "bg-rose-50 text-rose-800 border border-rose-200"
+              : "bg-blue-50 text-blue-800 border border-blue-200"
+          }`}>
+            <span className="shrink-0">{feedbackMsg.type === "success" ? "✓" : "ℹ"}</span>
+            <span className="line-clamp-2">{feedbackMsg.text}</span>
+          </div>
+        )}
+
         {onOpenCamera && (
           <button
             onClick={onOpenCamera}
-            className="w-full flex items-center justify-center space-x-2 py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs font-bold transition shadow-md shadow-emerald-500/25"
+            className="w-full flex items-center justify-center space-x-2 py-2 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs font-bold transition shadow-sm"
           >
-            <Camera className="w-4 h-4" />
+            <Camera className="w-3.5 h-3.5" />
             <span>📸 Xem Cam & Chụp ảnh theo yêu cầu</span>
           </button>
         )}

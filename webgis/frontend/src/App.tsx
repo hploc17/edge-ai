@@ -33,6 +33,7 @@ export const App: React.FC = () => {
   // Selected Node Drawer state
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNodeDetail, setSelectedNodeDetail] = useState<NodeDetail | null>(null);
+  const [selectNodeTrigger, setSelectNodeTrigger] = useState<number>(0);
 
   // Modals state
   const [isHealthOpen, setIsHealthOpen] = useState(false);
@@ -44,9 +45,11 @@ export const App: React.FC = () => {
   const [isRemoteMinimized, setIsRemoteMinimized] = useState(false);
   const [cameraModalNode, setCameraModalNode] = useState<NodeDetail | null>(null);
 
-  // Pending Node Approval
+  // Pending Node Approval & Hardware MAC setup
   const [pendingCount, setPendingCount] = useState(0);
   const [isPendingApprovalOpen, setIsPendingApprovalOpen] = useState(false);
+  const [editingNodeForApproval, setEditingNodeForApproval] = useState<NodeDetail | null>(null);
+  const [initialEdgeIdForApproval, setInitialEdgeIdForApproval] = useState<string | null>(null);
   // edge_id của node đang đợi Admin pick vị trí trên bản đồ
   const [pickingForPendingNode, setPickingForPendingNode] = useState<string | null>(null);
 
@@ -188,6 +191,12 @@ export const App: React.FC = () => {
       } else if (msg.type === "device_pending") {
         // Thiết bị Jetson mới kết nối chưa qua approval
         setPendingCount(msg.pending_count ?? 1);
+        if (msg.require_setup) {
+          // Tự động mở modal thiết lập cho thiết bị có MAC chưa lưu
+          setEditingNodeForApproval(null);
+          setInitialEdgeIdForApproval(msg.edge_id || null);
+          setIsPendingApprovalOpen(true);
+        }
       } else if (msg.type === "node_deleted") {
         // Xóa node khỏi bản đồ
         const deletedId = msg.edge_id;
@@ -346,6 +355,7 @@ export const App: React.FC = () => {
   // Handle Node Click
   const handleSelectNode = async (edgeId: string) => {
     setSelectedNodeId(edgeId);
+    setSelectNodeTrigger(Date.now());
     try {
       const detail = await api.getNodeDetail(edgeId);
       setSelectedNodeDetail(detail);
@@ -441,6 +451,7 @@ export const App: React.FC = () => {
         nodesGeoJSON={nodesGeoJSON}
         segmentsGeoJSON={segmentsGeoJSON}
         selectedNodeId={selectedNodeId}
+        selectNodeTrigger={selectNodeTrigger}
         onSelectNode={handleSelectNode}
         basemap={basemap}
         layersConfig={layersConfig}
@@ -522,6 +533,11 @@ export const App: React.FC = () => {
           onRefreshNodes={fetchAllData}
           onOpenCamera={(node) => setCameraModalNode(node)}
           onOpenRemote={(node) => setRemoteNode(node)}
+          onEditNode={(node) => {
+            setEditingNodeForApproval(node);
+            setInitialEdgeIdForApproval(node.edge_id);
+            setIsPendingApprovalOpen(true);
+          }}
         />
       )}
 
@@ -539,13 +555,15 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* Pending Node Approval Modal */}
+      {/* Pending Node Approval & Hardware MAC Setup Modal */}
       {isPendingApprovalOpen && (
         <PendingNodeApprovalModal
           onClose={() => {
             setIsPendingApprovalOpen(false);
             setPickingForPendingNode(null);
             setPickedCoords(null);
+            setEditingNodeForApproval(null);
+            setInitialEdgeIdForApproval(null);
           }}
           onEnablePickMode={(edgeId) => {
             setPickingForPendingNode(edgeId);
@@ -559,7 +577,11 @@ export const App: React.FC = () => {
           onNodeApproved={() => {
             fetchAllData();
             setPendingCount(prev => Math.max(0, prev - 1));
+            setEditingNodeForApproval(null);
+            setInitialEdgeIdForApproval(null);
           }}
+          editingNode={editingNodeForApproval}
+          initialSelectedEdgeId={initialEdgeIdForApproval}
         />
       )}
     </div>
