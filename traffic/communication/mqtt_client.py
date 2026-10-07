@@ -44,8 +44,16 @@ def _load_env_file(path):
         pass
 
 _root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_load_env_file(os.path.join(_root_dir, '.env'))
-_load_env_file(os.path.join(_root_dir, 'snap', '.env'))
+_candidates = [
+    os.path.join(_root_dir, '.env'),
+    '/app/.env',
+    '/workspace/.env',
+    '.env'
+]
+for _cand in _candidates:
+    if os.path.isfile(_cand):
+        _load_env_file(_cand)
+        break
 
 # ── Topic contract (fixed, do not change without coordinating with Backend) ──
 EDGE_ID = os.getenv('EDGE_ID', 'edge-01')
@@ -193,15 +201,6 @@ class MQTTPublisher(object):
             'last_sequence': self._last_sequence,
             'timestamp': _iso_now(),
         }
-        try:
-            from communication.system_metrics import _get_mac_address
-            payload['mac_address'] = _get_mac_address()
-        except Exception:
-            try:
-                from system_metrics import _get_mac_address
-                payload['mac_address'] = _get_mac_address()
-            except Exception:
-                pass
         self._publish_raw(TOPIC_HEARTBEAT, json.dumps(payload), qos=1)
 
     def set_registration_profile(self, profile):
@@ -226,16 +225,6 @@ class MQTTPublisher(object):
         data.setdefault('camera_id', CAMERA_ID)
         data.setdefault('segment_id', SEGMENT_ID)
         data.setdefault('timestamp', _iso_now())
-        if 'mac_address' not in data:
-            try:
-                from communication.system_metrics import _get_mac_address
-                data['mac_address'] = _get_mac_address()
-            except Exception:
-                try:
-                    from system_metrics import _get_mac_address
-                    data['mac_address'] = _get_mac_address()
-                except Exception:
-                    pass
         self._publish_raw(TOPIC_REGISTRATION, json.dumps(data, ensure_ascii=False), qos=1)
         print('[MQTT] Published device registration profile to %s' % TOPIC_REGISTRATION)
 

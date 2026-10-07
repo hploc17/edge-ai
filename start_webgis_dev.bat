@@ -1,3 +1,3 @@
 @echo off
-cd /d "%~dp0webgis"
-call start_dev.bat
+cd /d "%~dp0"
+call start_webgis.bat

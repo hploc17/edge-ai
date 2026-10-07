@@ -19,34 +19,32 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-# Snapshot package is stored next to this main file in ./snap.  Load its .env
-# before importing mqtt_publisher because that module reads MQTT settings at
-# import time.
 SCRIPT_DIR = Path(__file__).resolve().parent
-SNAPSHOT_DIR = SCRIPT_DIR / 'snap'
 
 # Đảm bảo thư mục gốc project ở vị trí đầu tiên của sys.path để package config/ được ưu tiên
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+# Nạp cấu hình từ tệp .env DUY NHẤT thông qua config.settings
+from config.settings import (
+    LOADED_ENV_PATH,
+    OUTBOX_DIR,
+    DEVICE_NAME,
+    ROAD_NAME,
+    GEO_LAT,
+    GEO_LNG,
+    GEO_ALTITUDE_M,
+    CAMERA_HEADING,
+    CAMERA_FOV,
+)
+
 try:
-    from snap.config import load_env_file
     from snap.runtime import create_from_env
     from snap.deepstream_integration import attach_snapshot_probe
 except ImportError as error:
-    raise RuntimeError(
-        'Missing snapshot package in %s: %s' % (SNAPSHOT_DIR, error)
-    )
-
-load_env_file(str(SNAPSHOT_DIR / '.env'))
-
-# Non-secret compatibility defaults. MQTT username/password and EDGE_TOKEN
-# must be supplied by snap/.env or the container environment.
-os.environ.setdefault('BACKEND_URL', 'http://192.168.1.14:8000')
-os.environ.setdefault('MQTT_HOST',
-                      '829e7cb26c594257a7470e5a5af58064.s1.eu.hivemq.cloud')
-os.environ.setdefault('MQTT_PORT', '8883')
-os.environ.setdefault('EDGE_ID', 'edge-01')
+    create_from_env = None
+    attach_snapshot_probe = None
+    print('[WARNING] Snapshot package not available: %s' % error)
 
 # Edge modules
 from spatial.geometry_utils import bbox_bottom_center, point_in_polygon
@@ -77,26 +75,6 @@ from analytics.speed_estimator import (
 from communication.mqtt_client import MQTTPublisher, HeartbeatThread
 from communication.command_router import CommandHandler
 from communication.system_metrics import collect_comprehensive_health, _get_mac_address
-try:
-    from config.settings import (
-        OUTBOX_DIR,
-        DEVICE_NAME,
-        ROAD_NAME,
-        GEO_LAT,
-        GEO_LNG,
-        GEO_ALTITUDE_M,
-        CAMERA_HEADING,
-        CAMERA_FOV,
-    )
-except (ImportError, AttributeError):
-    OUTBOX_DIR = Path(os.getenv("OUTBOX_DIR", str(SCRIPT_DIR / "outbox")))
-    DEVICE_NAME = os.getenv("DEVICE_NAME", "Nút giao Nguyễn Trãi - Khuất Duy Tiến")
-    ROAD_NAME = os.getenv("ROAD_NAME", "Nguyễn Trãi")
-    GEO_LAT = float(os.getenv("GEO_LAT", "20.998412"))
-    GEO_LNG = float(os.getenv("GEO_LNG", "105.795123"))
-    GEO_ALTITUDE_M = float(os.getenv("GEO_ALTITUDE_M", "12.5"))
-    CAMERA_HEADING = float(os.getenv("CAMERA_HEADING", "45.0"))
-    CAMERA_FOV = float(os.getenv("CAMERA_FOV", "65.0"))
 
 
 def _collect_edge_metrics(fps):
@@ -301,6 +279,7 @@ def add_traffic_display_meta(pyds, batch_meta, frame_meta, geometry,
 
 
 def main():
+    default_source = os.getenv('VIDEO_SOURCE', 'csi')
     parser = argparse.ArgumentParser(
         description='Jetson Nano ROI speed and traffic analytics',
         allow_abbrev=False
@@ -308,18 +287,18 @@ def main():
     parser.add_argument('source', nargs='?', default=None,
                         help='csi, RTSP URL, video path, or webcam /dev/video0')
     parser.add_argument('--source', '-s', dest='source_opt', default=None)
-    parser.add_argument('--sensor-id', type=int, default=0)
-    parser.add_argument('--roi-config', default=str(
-        SCRIPT_DIR / 'configs' / 'roi_traffic_nano.json'))
+    parser.add_argument('--sensor-id', type=int, default=int(os.getenv('SENSOR_ID', '0')))
+    parser.add_argument('--roi-config', default=os.getenv('ROI_CONFIG', str(
+        SCRIPT_DIR / 'configs' / 'roi_traffic_nano.json')))
     parser.add_argument('--detection-margin', type=int, default=100)
-    parser.add_argument('--infer-config', default=str(
-        SCRIPT_DIR / 'configs' / 'config_infer_yolo11_nano.txt'))
-    parser.add_argument('--tracker-config', default=str(
-        SCRIPT_DIR / 'configs' / 'config_tracker_optimized.yml'))
-    parser.add_argument('--labels', default=str(
-        SCRIPT_DIR / 'configs' / 'labels_custom.txt'))
-    parser.add_argument('--vehicle-classes', default=','.join(
-        DEFAULT_VEHICLE_CLASSES))
+    parser.add_argument('--infer-config', default=os.getenv('INFER_CONFIG', str(
+        SCRIPT_DIR / 'configs' / 'config_infer_yolo11_nano.txt')))
+    parser.add_argument('--tracker-config', default=os.getenv('TRACKER_CONFIG', str(
+        SCRIPT_DIR / 'configs' / 'config_tracker_optimized.yml')))
+    parser.add_argument('--labels', default=os.getenv('LABELS_FILE', str(
+        SCRIPT_DIR / 'configs' / 'labels_custom.txt')))
+    parser.add_argument('--vehicle-classes', default=os.getenv('ACTIVE_VEHICLE_CLASSES', ','.join(
+        DEFAULT_VEHICLE_CLASSES)))
     parser.add_argument('--enter-confirm', type=float, default=0.10)
     parser.add_argument('--exit-confirm', type=float, default=0.25)
     parser.add_argument('--lost-timeout', type=float, default=1.00)
@@ -329,16 +308,17 @@ def main():
     parser.add_argument('--speed-smoothing-alpha', type=float, default=0.25)
     parser.add_argument('--speed-max-gap', type=float, default=0.75)
     parser.add_argument('--speed-max-kmh', type=float, default=130.0)
-    parser.add_argument('--source-fps', type=float, default=30.0)
-    parser.add_argument('--stopped-speed-kmh', type=float, default=5.0)
-    parser.add_argument('--congested-speed-kmh', type=float, default=15.0)
-    parser.add_argument('--slow-speed-kmh', type=float, default=30.0)
-    parser.add_argument('--slow-density', type=float, default=80.0)
-    parser.add_argument('--congested-density', type=float, default=120.0)
+    parser.add_argument('--source-fps', type=float, default=float(os.getenv('SOURCE_FPS', '30.0')))
+    parser.add_argument('--stopped-speed-kmh', type=float, default=float(os.getenv('STOPPED_SPEED_KMH', '5.0')))
+    parser.add_argument('--congested-speed-kmh', type=float, default=float(os.getenv('CONGESTED_SPEED_KMH', '15.0')))
+    parser.add_argument('--slow-speed-kmh', type=float, default=float(os.getenv('SLOW_SPEED_KMH', '30.0')))
+    parser.add_argument('--slow-density', type=float, default=float(os.getenv('SLOW_DENSITY', '80.0')))
+    parser.add_argument('--congested-density', type=float, default=float(os.getenv('CONGESTED_DENSITY', '120.0')))
     parser.add_argument('--forecast-min-history', type=float, default=300.0)
     parser.add_argument('--forecast-history', type=float, default=900.0)
     parser.add_argument('--no-mqtt', action='store_true')
     parser.add_argument('--no-snapshot', action='store_true',
+                        default=not (os.getenv('ENABLE_SNAPSHOT', 'true').lower() in ('true', '1', 'yes')),
                         help='Disable manual/congestion snapshots')
     parser.add_argument('--no-display', action='store_true')
     parser.add_argument('--display', action='store_true',
@@ -348,12 +328,11 @@ def main():
     parser.add_argument('--setup', action='store_true',
                         help='Open interactive GUI to draw ROI and calibrate road dimensions')
     parser.add_argument('--backend-url', default=None,
-                        help='URL to WebGIS backend API (default from snap/.env or http://192.168.1.14:8000)')
+                        help='URL to WebGIS backend API (default from .env)')
     args = parser.parse_args()
 
     if args.backend_url:
         os.environ['BACKEND_URL'] = args.backend_url
-
 
     # Resolve all config paths to absolute paths
     args.roi_config = resolve_config_file(args.roi_config)
@@ -361,9 +340,26 @@ def main():
     args.tracker_config = resolve_config_file(args.tracker_config)
     args.labels = resolve_config_file(args.labels)
 
-    raw_source = args.source_opt if args.source_opt is not None else (args.source or 'csi')
+    raw_source = args.source_opt if args.source_opt is not None else (args.source or default_source)
     resolved_source = resolve_video_source(raw_source)
     kind = source_type(resolved_source)
+
+    resolved_classes = [c.strip() for c in args.vehicle_classes.split(',') if c.strip()]
+    vehicle_classes = tuple(resolved_classes)
+
+    print("=" * 66)
+    print("   EDGE TRAFFIC AI - NVIDIA JETSON NANO PIPELINE STARTUP")
+    print("=" * 66)
+    print(" [ENV] Config file loaded   : %s" % (LOADED_ENV_PATH or "System Environment"))
+    print(" [DEVICE] Edge ID / Camera  : %s / %s" % (os.getenv('EDGE_ID', 'edge-01'), os.getenv('CAMERA_ID', 'camera-01')))
+    print(" [DEVICE] Segment / Sensor  : %s / %s" % (os.getenv('SEGMENT_ID', 'segment-001'), os.getenv('SENSOR_ID', '0')))
+    print(" [GIS] Tọa độ & Tên trạm    : Quản lý từ WebGIS (Thiết lập / chỉnh sửa trên Web)")
+    print(" [BACKEND] WebGIS URL       : %s" % os.getenv('BACKEND_URL', ''))
+    print(" [MQTT] Broker              : %s:%s" % (os.getenv('MQTT_HOST', ''), os.getenv('MQTT_PORT', '')))
+    print(" [VIDEO] Source / Kind      : %s (%s)" % (resolved_source, kind))
+    print(" [CLASSES] Active Vehicles  : %s" % ', '.join(vehicle_classes))
+    print(" [SNAPSHOT] Service Active  : %s" % (not args.no_snapshot))
+    print("=" * 66)
 
     if args.setup:
         from spatial.roi_setup import interactive_roi_setup
@@ -392,10 +388,6 @@ def main():
     )
     class_names = load_class_names(args.labels)
     available_classes = set(class_names.values())
-
-    resolved_classes = [c.strip() for c in args.vehicle_classes.split(',') if c.strip()]
-    vehicle_classes = tuple(resolved_classes)
-    print('[CONFIG] Active vehicle classes: %s' % ', '.join(vehicle_classes))
 
     presence_counter = RoiPresenceCounter(
         geometry['analysis'], vehicle_classes,
@@ -439,20 +431,24 @@ def main():
         cmd_handler = CommandHandler(mqtt_publisher)
 
         # Gói 1: Profile & GIS Registration cho WebGIS
+        # Tọa độ GPS: Chỉ gửi khi thực tế có phần cứng GPS. Mặc định None để WebGIS yêu cầu thiết lập
+        geo_data = None
+        if GEO_LAT is not None and GEO_LNG is not None:
+            geo_data = {
+                'lat': GEO_LAT,
+                'lng': GEO_LNG,
+                'altitude_m': GEO_ALTITUDE_M or 0.0,
+            }
+
         profile_data = {
             'event': 'device_registered',
             'edge_id': os.getenv('EDGE_ID', 'edge-01'),
-            'device_name': DEVICE_NAME,
+            'camera_id': os.getenv('CAMERA_ID', 'camera-01'),
+            'segment_id': os.getenv('SEGMENT_ID', 'segment-001'),
+            'sensor_id': int(os.getenv('SENSOR_ID', '0')),
             'mac_address': _get_mac_address(),
-            'geo': {
-                'lat': GEO_LAT,
-                'lng': GEO_LNG,
-                'altitude_m': GEO_ALTITUDE_M,
-                'segment_id': os.getenv('SEGMENT_ID', 'segment-001'),
-                'road_name': ROAD_NAME,
-                'heading': CAMERA_HEADING,
-                'fov': CAMERA_FOV,
-            },
+            'has_gps': geo_data is not None,
+            'geo': geo_data,
             'spatial_config': {
                 'road_length_m': float(traffic_config.get('road_length_m', 50.0)),
                 'road_width_m': float(traffic_config.get('road_width_m', 7.0)),
@@ -508,7 +504,7 @@ def main():
 
     if not args.no_snapshot:
         if not os.getenv('EDGE_TOKEN', '').strip():
-            parser.error('EDGE_TOKEN is required in snap/.env')
+            parser.error('EDGE_TOKEN is required in .env')
 
         def publish_snapshot_result(result):
             if mqtt_publisher is None:

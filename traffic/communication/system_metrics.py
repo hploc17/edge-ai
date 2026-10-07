@@ -214,24 +214,3 @@ def collect_comprehensive_health(fps=0.0, camera_status="streaming", outbox_dir=
             "inference_latency_ms": latency_ms,
         },
     }
-
-
-def collect_spatial_info():
-    """Thu thập thông số không gian và định danh thiết bị của Jetson Nano."""
-    now_iso = time.strftime("%Y-%m-%dT%H:%M:%S+07:00")
-    return {
-        "edge_id": os.getenv("EDGE_ID", "edge-01"),
-        "mac_address": _get_mac_address(),
-        "local_ip": _get_local_ip(),
-        "camera_id": os.getenv("CAMERA_ID", "camera-01"),
-        "latitude": float(os.getenv("NODE_LAT", os.getenv("GEO_LAT", 20.998412))),
-        "longitude": float(os.getenv("NODE_LON", os.getenv("GEO_LNG", 105.795123))),
-        "altitude_m": float(os.getenv("GEO_ALTITUDE_M", os.getenv("NODE_ALTITUDE", 12.5))),
-        "camera_heading": float(os.getenv("CAMERA_HEADING", 45.0)),
-        "camera_fov": float(os.getenv("CAMERA_FOV", 65.0)),
-        "road_name": os.getenv("ROAD_NAME", "Đường Nguyễn Trãi"),
-        "segment_id": os.getenv("SEGMENT_ID", "segment-001"),
-        "model_version": os.getenv("MODEL_VERSION", "exp.engine"),
-        "timestamp": now_iso,
-    }
-

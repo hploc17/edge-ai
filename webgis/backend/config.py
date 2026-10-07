@@ -6,10 +6,11 @@ from dotenv import load_dotenv
 BACKEND_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BACKEND_DIR.parent.parent
 
-# Load root .env if exists
-env_path = ROOT_DIR / ".env"
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
+# Load .env if exists (support backend, webgis, or root folder)
+for env_candidate in [BACKEND_DIR / ".env", BACKEND_DIR.parent / ".env", ROOT_DIR / ".env"]:
+    if env_candidate.exists():
+        load_dotenv(dotenv_path=env_candidate)
+        break
 
 # Server Port & Host
 API_HOST = os.getenv("API_HOST", "0.0.0.0")

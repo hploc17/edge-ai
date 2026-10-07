@@ -1,31 +1,55 @@
 {
   "seg-edge-01": {
     "segment_id": "seg-edge-01",
-    "road_name": "Pho To Huu",
+    "road_name": "Nguyễn Văn Khối",
     "lane_count": 2,
-    "road_length_m": 200.0,
-    "road_width_m": 8.0,
-    "speed_limit_kmh": 60.0,
+    "road_length_m": 223.0,
+    "road_width_m": 7.0,
+    "speed_limit_kmh": 50.0,
     "coordinates": [
       [
-        105.795434,
-        20.9985525
+        106.6571611,
+        10.8425938
       ],
       [
-        105.7952238,
-        20.9983892
+        106.6573141,
+        10.8425852
       ],
       [
-        105.7950569,
-        20.9982233
+        106.6576252,
+        10.8425678
+      ],
+      [
+        106.6579433,
+        10.8425096
+      ],
+      [
+        106.6579902,
+        10.8424987
+      ],
+      [
+        106.6581629,
+        10.8424584
+      ],
+      [
+        106.6587906,
+        10.8423286
+      ],
+      [
+        106.6589337,
+        10.8422968
+      ],
+      [
+        106.6591647,
+        10.8422455
       ]
     ],
-    "congestion_score": 0,
-    "traffic_status": "FREE",
-    "traffic_color": "#10B981",
-    "avg_speed_kmh": 0.0,
-    "current_vehicle_count": 0,
+    "congestion_score": 41,
+    "traffic_status": "CONGESTED",
+    "traffic_color": "#F59E0B",
+    "avg_speed_kmh": 19.6,
+    "current_vehicle_count": 4,
     "density_veh_per_km_lane": 0.0,
-    "updated_at": "2026-09-29T09:45:26.491194"
+    "updated_at": "2026-10-06T14:15:59.359528"
   }
 }

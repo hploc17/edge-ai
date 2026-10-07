@@ -35,7 +35,7 @@ ALLOWED_ACTIONS = frozenset([
     'start_csi',
     'stop_pipeline',
     'capture_snapshot',
-    # Diagnostics & Spatial
+    # Diagnostics
     'get_health',
     'get_spatial_info',
     'request_status',

@@ -87,6 +87,15 @@ def favicon():
 
 # Static files mount if frontend is built
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if not FRONTEND_DIST.exists():
+    for cand_dist in [
+        Path(__file__).resolve().parent / "frontend" / "dist",
+        Path(__file__).resolve().parent / "dist",
+        Path(__file__).resolve().parent.parent / "dist"
+    ]:
+        if cand_dist.exists():
+            FRONTEND_DIST = cand_dist
+            break
 if FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
 else:

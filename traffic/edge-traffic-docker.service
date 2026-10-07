@@ -1,0 +1,17 @@
+[Unit]
+Description=Auto Run Edge Traffic AI Docker on Startup
+After=network-online.target nvargus-daemon.service docker.service
+Wants=network-online.target
+Requires=docker.service nvargus-daemon.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=admin1
+WorkingDirectory=/home/admin1/Desktop/traffic
+ExecStart=/bin/bash /home/admin1/Desktop/traffic/run.sh
+ExecStop=/bin/bash /home/admin1/Desktop/traffic/stop.sh
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

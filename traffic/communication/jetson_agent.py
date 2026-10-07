@@ -32,6 +32,9 @@ import threading
 import time
 import uuid
 
+import cv2
+import numpy as np
+
 # Đường dẫn gốc của project (thư mục chứa main.py)
 SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -391,11 +394,12 @@ def capture_direct_csi_jpeg(sensor_id=0, width=1280, height=720, quality=80):
         with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_file:
             tmp_path = tmp_file.name
 
+        flip_method = int(os.getenv('CSI_FLIP_METHOD', '0'))
         argv = [
             "gst-launch-1.0", "-e", "-q",
             "nvarguscamerasrc", "sensor-id=%d" % sensor_id, "num-buffers=4", "!",
             "video/x-raw(memory:NVMM),width=%d,height=%d,framerate=30/1,format=NV12" % (width, height), "!",
-            "nvvidconv", "!",
+            "nvvidconv", "flip-method=%d" % flip_method, "!",
             "video/x-raw,format=I420", "!",
             "jpegenc", "quality=%d" % quality, "!",
             "filesink", "location=" + tmp_path
@@ -415,12 +419,13 @@ def capture_direct_csi_jpeg(sensor_id=0, width=1280, height=720, quality=80):
 
     # Cách 2: OpenCV GStreamer pipeline
     try:
+        flip_method = int(os.getenv('CSI_FLIP_METHOD', '0'))
         gst_str = (
             "nvarguscamerasrc sensor-id=%d ! "
             "video/x-raw(memory:NVMM),width=%d,height=%d,framerate=30/1,format=NV12 ! "
-            "nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! "
+            "nvvidconv flip-method=%d ! video/x-raw,format=BGRx ! videoconvert ! "
             "video/x-raw,format=BGR ! appsink drop=true max-buffers=1"
-        ) % (sensor_id, width, height)
+        ) % (sensor_id, width, height, flip_method)
         import cv2
         cap = cv2.VideoCapture(gst_str, cv2.CAP_GSTREAMER)
         if cap and cap.isOpened():
@@ -688,17 +693,13 @@ def run_agent():
     from communication.mqtt_client import MQTTPublisher, HeartbeatThread
     from communication.command_router import CommandHandler
     try:
-        from communication.system_metrics import collect_comprehensive_health, collect_spatial_info, _get_mac_address
+        from communication.system_metrics import collect_comprehensive_health
     except (ImportError, AttributeError):
         try:
-            from system_metrics import collect_comprehensive_health, collect_spatial_info, _get_mac_address
+            from system_metrics import collect_comprehensive_health
         except (ImportError, AttributeError):
             def collect_comprehensive_health():
                 return {'general': {'service_status': 'running', 'fallback': True}}
-            def collect_spatial_info():
-                return {'edge_id': edge_id, 'mac_address': '00:00:00:00:00:00'}
-            def _get_mac_address():
-                return '00:00:00:00:00:00'
 
 
     # Trạng thái dùng chung giữa các handler (thay dict thay cho global)
@@ -716,6 +717,15 @@ def run_agent():
     publisher = MQTTPublisher(command_callback=lambda data: cmd_handler.handle(data) if cmd_handler else None)
     cmd_handler = CommandHandler(publisher)
 
+    # Thiết lập hồ sơ thiết bị: Chỉ gửi ID phần cứng, metadata tọa độ do WebGIS quản lý
+    geo_data = None
+    if os.getenv('GEO_LAT') and os.getenv('GEO_LNG'):
+        geo_data = {
+            'lat': float(os.getenv('GEO_LAT')),
+            'lng': float(os.getenv('GEO_LNG')),
+            'altitude_m': float(os.getenv('GEO_ALTITUDE_M', '0.0')),
+        }
+
     # Đăng ký tất cả handler
     cmd_handler.register('list_videos', make_list_videos_handler())
     cmd_handler.register('capture_preview', make_capture_preview_handler(agent_state, upload_preview_fn))
@@ -727,27 +737,26 @@ def run_agent():
     cmd_handler.register('capture_test_snapshot', make_capture_snapshot_handler(agent_state, backend_url, edge_id, edge_token))
     cmd_handler.register('request_status', make_request_status_handler(agent_state))
     cmd_handler.register('get_health', lambda data: collect_comprehensive_health())
-    cmd_handler.register('get_spatial_info', lambda data: collect_spatial_info())
+    cmd_handler.register('get_spatial_info', lambda data: {
+        'edge_id': edge_id,
+        'camera_id': os.getenv('CAMERA_ID', 'camera-01'),
+        'segment_id': os.getenv('SEGMENT_ID', 'segment-001'),
+        'sensor_id': int(os.getenv('SENSOR_ID', '0')),
+        'geo': geo_data,
+    })
     # Legacy aliases
     cmd_handler.register('restart_analytics', make_stop_pipeline_handler(agent_state))
     cmd_handler.register('reload_config', lambda data: 'Config reload queued (restart pipeline to apply)')
     cmd_handler.register('start_video_test', make_start_pipeline_handler(agent_state))
 
-
-    # Thiết lập hồ sơ thiết bị để WebGIS tự động nhận diện (Auto-discovery) và vẽ Node trên bản đồ
     registration_profile = {
         'event': 'device_registered',
         'edge_id': edge_id,
-        'mac_address': _get_mac_address(),
-        'name': os.getenv('NODE_NAME', 'Camera AI Jetson (%s)' % edge_id),
-        'device_name': os.getenv('NODE_NAME', 'Camera AI Jetson (%s)' % edge_id),
         'camera_id': os.getenv('CAMERA_ID', 'camera-01'),
         'segment_id': os.getenv('SEGMENT_ID', 'segment-001'),
-        'road_name': os.getenv('ROAD_NAME', 'Đường Nguyễn Trãi'),
-        'latitude': float(os.getenv('NODE_LAT', 20.998412)),
-        'longitude': float(os.getenv('NODE_LON', 105.795123)),
-        'camera_heading': float(os.getenv('CAMERA_HEADING', 45.0)),
-        'camera_fov': float(os.getenv('CAMERA_FOV', 65.0)),
+        'sensor_id': int(os.getenv('SENSOR_ID', '0')),
+        'has_gps': geo_data is not None,
+        'geo': geo_data,
         'status': 'online',
         'model_version': os.getenv('MODEL_VERSION', 'exp.engine'),
         'timestamp': time.strftime("%Y-%m-%dT%H:%M:%S+07:00")

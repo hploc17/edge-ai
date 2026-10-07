@@ -1,7 +1,7 @@
 [property]
 gpu-id=0
 net-scale-factor=0.0039215697906911373
-model-engine-file=/workspace/1908/exp.engine
+model-engine-file=/workspace/configs/exp.engine
 onnx-file=/workspace/1908/exp.onnx
 labelfile-path=/app/configs/labels_custom.txt
 batch-size=1

@@ -1,0 +1,5 @@
+# Python 3.6 / JetPack 4.x compatibility pins, NOT latest security releases.
+# Deploy behind VPN/HTTPS; do not expose an unmaintained Python runtime publicly.
+paho-mqtt==1.6.1
+requests==2.27.1
+# Use cv2 and numpy already installed with JetPack. Do not pip install opencv-python.

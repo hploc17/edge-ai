@@ -1,6 +1,8 @@
 # Environment & Secrets (TUYỆT ĐỐI KHÔNG ĐƯA LÊN GITHUB)
 .env
 snap/.env
+traffic/.env
+webgis/backend/.env
 *.token
 *.pem
 *.key
@@ -11,6 +13,9 @@ __pycache__/
 *$py.class
 .pytest_cache/
 *.log
+*.sqlite3
+*.db
+*.lock
 
 # TensorRT Engines & Heavy Models (Build tại chỗ trên Jetson)
 *.engine
@@ -18,16 +23,27 @@ __pycache__/
 *.weights
 
 # Video files (nặng, không đưa lên git)
-Video/*.mp4
-Video/*.h264
-Video/*.mkv
-Video/*.avi
+*.mp4
+*.h264
+*.mkv
+*.avi
+*.filepart
+Video/*
 !Video/.gitkeep
+traffic/Video/*
+!traffic/Video/.gitkeep
+traffic_backup/
 
-# Cache & Local Outbox
+# Cache, Local Outbox & Snapshots
 outbox/
 snap/outbox/
 snap/snapshots/
+snapshot_outbox*/
+traffic/snapshot_outbox*/
+webgis/backend/data/snapshots/*.jpg
+webgis/backend/data/snapshots/*.jpeg
+webgis/backend/data/snapshots/*.png
+!webgis/backend/data/snapshots/.gitkeep
 
 # Node.js & Frontend dependencies
 node_modules/
