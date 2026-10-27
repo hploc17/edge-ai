@@ -1,0 +1,73 @@
+# ==============================================================================
+# .gitignore - HỆ THỐNG TRAFFIC EDGE AI & WEBGIS
+# ==============================================================================
+
+# 1. Environment & Secrets (TUYỆT ĐỐI KHÔNG ĐƯA LÊN GITHUB)
+.env
+.env.*
+!.env.example
+*.token
+*.pem
+*.key
+cookies.txt
+
+# 2. Python artifacts & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.log
+*.sqlite3
+*.db
+*.lock
+venv/
+.venv/
+env/
+
+# 3. TensorRT Engines & Heavy Models (Build tại chỗ trên Jetson)
+*.engine
+*.onnx
+*.weights
+*.pt
+
+# 4. Video files (Dung lượng lớn, không đưa lên git)
+*.mp4
+*.h264
+*.mkv
+*.avi
+*.filepart
+Video/*
+!Video/.gitkeep
+traffic/Video/*
+!traffic/Video/.gitkeep
+traffic_backup/
+
+# 5. Cache, Local Outbox & Snapshots
+outbox/
+snap/outbox/
+snap/snapshots/
+snapshot_outbox*/
+traffic/snapshot_outbox*/
+webgis/backend/data/snapshots/*
+!webgis/backend/data/snapshots/.gitkeep
+webgis/backend/data/*.backup.json
+
+# 6. Node.js & Frontend dependencies
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.vite/
+**/.vite/
+.cache/
+**/.cache/
+
+# 7. OS & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 8. Deployment Archives
+*.zip
+dist_packages/

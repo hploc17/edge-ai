@@ -1,0 +1,188 @@
+import axios from "axios";
+import type { GeoJSONFeatureCollection, NodeDetail, SummaryKPIs, HistoryRecord, CongestionSnapshot, PendingNodeInfo, OSMRoadInfo } from "../types/gis";
+
+const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
+export const API_HOST_URL = `http://${host}:8000`;
+export const API_BASE = `${API_HOST_URL}/api/v1`;
+
+// Tự động gắn Bearer Token cho mọi request axios gửi đến FastAPI
+axios.interceptors.request.use((config) => {
+  const token = localStorage.getItem("webgis_auth_token");
+  if (token && config.headers) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// Bắt lỗi 401: phiên hết hạn hoặc không có quyền -> dọn token
+axios.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      console.warn("[HTTP 401] Token không hợp lệ hoặc đã hết hạn");
+    }
+    return Promise.reject(error);
+  }
+);
+
+export const api = {
+  // ── GIS Layers ────────────────────────────────────────────────────────────
+  getNodesGeoJSON: async () => {
+    const res = await axios.get<GeoJSONFeatureCollection<any, any>>(`${API_BASE}/gis/nodes`);
+    return res.data;
+  },
+  getSegmentsGeoJSON: async () => {
+    const res = await axios.get<GeoJSONFeatureCollection<any, any>>(`${API_BASE}/gis/segments`);
+    return res.data;
+  },
+  getNodesLiveStates: async () => {
+    const res = await axios.get<Record<string, any>>(`${API_BASE}/gis/nodes/live-states`);
+    return res.data;
+  },
+  getSummaryKPIs: async () => {
+    const res = await axios.get<SummaryKPIs>(`${API_BASE}/gis/summary`);
+    return res.data;
+  },
+
+  // ── Approved Node Management ──────────────────────────────────────────────
+  getAllNodes: async () => {
+    const res = await axios.get<NodeDetail[]>(`${API_BASE}/nodes`);
+    return res.data;
+  },
+  getNodeDetail: async (edgeId: string) => {
+    const res = await axios.get<NodeDetail>(`${API_BASE}/nodes/${edgeId}`);
+    return res.data;
+  },
+  createNode: async (nodeData: any) => {
+    const res = await axios.post(`${API_BASE}/nodes`, nodeData);
+    return res.data;
+  },
+  updateNode: async (edgeId: string, nodeData: any) => {
+    const res = await axios.put(`${API_BASE}/nodes/${edgeId}`, nodeData);
+    return res.data;
+  },
+  deleteNode: async (edgeId: string) => {
+    const res = await axios.delete(`${API_BASE}/nodes/${edgeId}`);
+    return res.data;
+  },
+
+  // ── Pending Node Approval Flow ────────────────────────────────────────────
+  getNextIdentifiers: async (): Promise<{ edge_id: string; camera_id: string; segment_id: string }> => {
+    const res = await axios.get<{ edge_id: string; camera_id: string; segment_id: string }>(`${API_BASE}/nodes/auto-id`);
+    return res.data;
+  },
+  getPendingNodes: async (): Promise<PendingNodeInfo[]> => {
+    const res = await axios.get<PendingNodeInfo[]>(`${API_BASE}/nodes/pending`);
+    return res.data;
+  },
+  approveNode: async (edgeId: string, approvalData: {
+    name?: string;
+    mac_address?: string;
+    latitude: number;
+    longitude: number;
+    road_name: string;
+    segment_id?: string;
+    lane_count: number;
+    road_length_m: number;
+    road_width_m: number;
+    speed_limit_kmh: number;
+    camera_heading: number;
+    camera_fov: number;
+    altitude_m?: number;
+    osm_way_id?: number;
+    osm_road_type?: string;
+    osm_coordinates?: [number, number][];
+  }) => {
+    const res = await axios.post(`${API_BASE}/nodes/${edgeId}/approve`, approvalData);
+    return res.data;
+  },
+  readSpatialInfo: async (edgeId: string) => {
+    const res = await axios.post<{
+      edge_id: string;
+      status: string;
+      message?: string;
+      spatial_info: {
+        edge_id?: string;
+        mac_address?: string;
+        local_ip?: string;
+        camera_id?: string;
+        latitude?: number;
+        longitude?: number;
+        altitude_m?: number;
+        camera_heading?: number;
+        camera_fov?: number;
+        road_name?: string;
+        segment_id?: string;
+        model_version?: string;
+      };
+    }>(`${API_BASE}/nodes/${edgeId}/read-spatial`);
+    return res.data;
+  },
+  rejectPendingNode: async (edgeId: string) => {
+    const res = await axios.delete(`${API_BASE}/nodes/${edgeId}/pending`);
+    return res.data;
+  },
+
+  // ── Commands & Diagnostics ─────────────────────────────────────────────────
+  diagnoseHealth: async (edgeId: string) => {
+    const res = await axios.post(`${API_BASE}/commands/diagnose/${edgeId}`);
+    return res.data;
+  },
+  sendCommand: async (edgeId: string, action: string, params?: any) => {
+    const res = await axios.post(`${API_BASE}/commands/send`, { edge_id: edgeId, action, params });
+    return res.data;
+  },
+
+  // ── Pipeline & Remote Control ──────────────────────────────────────────────
+  startCsiPipeline: async (edgeId: string, display: boolean = false) => {
+    const res = await axios.post<{ edge_id: string; command_id: string; status: string; message: string }>(
+      `${API_BASE}/nodes/${edgeId}/pipeline/start-csi`,
+      { display }
+    );
+    return res.data;
+  },
+  startPipeline: async (edgeId: string, payload: { source_type?: string; source?: string; roi_config?: string; display?: boolean }) => {
+    const res = await axios.post<{ edge_id: string; command_id: string; status: string; message: string }>(
+      `${API_BASE}/nodes/${edgeId}/pipeline/start`,
+      payload
+    );
+    return res.data;
+  },
+  stopPipeline: async (edgeId: string) => {
+    const res = await axios.post<{ edge_id: string; command_id: string; status: string; message: string }>(
+      `${API_BASE}/nodes/${edgeId}/pipeline/stop`
+    );
+    return res.data;
+  },
+  getPipelineStatus: async (edgeId: string) => {
+    const res = await axios.get<{ edge_id: string; command_id: string; status: string; message: string }>(
+      `${API_BASE}/nodes/${edgeId}/pipeline/status`
+    );
+    return res.data;
+  },
+
+  // ── History & Playback ─────────────────────────────────────────────────────
+  getTimeline: async (segmentId: string = "segment-001") => {
+    const res = await axios.get<{
+      segment_id: string;
+      total_intervals: number;
+      peak_congestion_score: number;
+      min_speed_kmh: number;
+      avg_speed_kmh: number;
+      records: HistoryRecord[];
+    }>(`${API_BASE}/history/timeline?segment_id=${segmentId}`);
+    return res.data;
+  },
+  getSnapshots: async (segmentId?: string) => {
+    const url = segmentId ? `${API_BASE}/history/snapshots?segment_id=${segmentId}` : `${API_BASE}/history/snapshots`;
+    const res = await axios.get<CongestionSnapshot[]>(url);
+    return res.data;
+  },
+
+  // ── OSM Road Info ──────────────────────────────────────────────────────────
+  /** Lấy thông số đường thực tế (tên, làn, tốc độ, tọa độ LineString) từ OpenStreetMap */
+  fetchOSMRoadInfo: async (lat: number, lng: number): Promise<OSMRoadInfo> => {
+    const res = await axios.get<OSMRoadInfo>(`${API_BASE}/osm/road-info`, { params: { lat, lng } });
+    return res.data;
+  },
+};

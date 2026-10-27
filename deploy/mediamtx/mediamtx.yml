@@ -1,0 +1,55 @@
+# ==============================================================================
+# MediaMTX Configuration for WebGIS Edge AI Live Video Streaming
+# Ports:
+#   8554 (RTSP TCP/UDP - Jetson Ingest)
+#   8888 (HLS / LL-HLS - WebGIS Fallback)
+#   8889 (WebRTC / WHEP - Ultra Low Latency < 500ms)
+#   8189 (WebRTC ICE UDP)
+# ==============================================================================
+
+# Global Settings
+logLevel: info
+logDestinations: [stdout]
+readTimeout: 24h
+writeTimeout: 24h
+
+# RTSP Server (Nhận luồng H.264 từ Jetson rtspclientsink)
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp, udp]
+rtspEncryption: "no"
+
+# WebRTC Server (Trình duyệt xem trực tiếp qua WHEP)
+webrtc: yes
+webrtcAddress: :8889
+webrtcEncryption: false
+webrtcAllowOrigins: ["*"]
+# Địa chỉ IP của máy chủ MediaMTX trong mạng LAN để WebRTC ICE bắt tay thành công
+# Có thể override bằng biến môi trường: MTX_WEBRTCADDITIONALHOSTS
+webrtcAdditionalHosts: [192.168.88.193, 127.0.0.1]
+webrtcLocalUDPAddress: :8189
+
+# HLS Server (Low-Latency HLS cho trình duyệt fallback qua hls.js)
+hls: yes
+hlsAddress: :8888
+hlsEncryption: false
+hlsAllowOrigins: ["*"]
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+
+# RTMP (Tắt nếu không dùng để tiết kiệm tài nguyên)
+rtmp: no
+
+# Cấu hình đường dẫn cho các Edge Nodes (ví dụ: live/edge-01)
+paths:
+  # Cho phép bất kỳ Edge Node nào đẩy luồng lên tiền tố live/
+  ~^live/(?P<edge_id>.+)$:
+    source: publisher
+    maxReaders: 20
+    overridePublisher: yes
+
+  # Đường dẫn mặc định dự phòng
+  all_others:
+    source: publisher

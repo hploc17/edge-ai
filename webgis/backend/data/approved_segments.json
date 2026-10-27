@@ -1,0 +1,8 @@
+{
+  "test-seg-concurrency": {
+    "segment_id": "test-seg-concurrency",
+    "name": "Test Segment",
+    "road_length_m": 250.0,
+    "lane_count": 2
+  }
+}

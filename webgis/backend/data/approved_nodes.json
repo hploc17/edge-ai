@@ -1,0 +1,114 @@
+{
+  "edge-110": {
+    "edge_id": "edge-110",
+    "mac_address": "80:32:53:8A:88:B5",
+    "name": "Camera Lê Đức Thọ",
+    "camera_id": "camera-01",
+    "model_version": "exp.engine",
+    "latitude": 10.852708,
+    "longitude": 106.660508,
+    "road_name": "Lê Đức Thọ",
+    "segment_id": "SEG_001",
+    "lane_count": 2,
+    "road_length_m": 85.0,
+    "road_width_m": 8.0,
+    "speed_limit_kmh": 60.0,
+    "camera_heading": 45.0,
+    "camera_fov": 65.0,
+    "altitude_m": 12.0,
+    "osm_way_id": 1220197484,
+    "osm_road_type": "secondary",
+    "status": "online",
+    "traffic_status": "UNKNOWN",
+    "congestion_score": 0,
+    "avg_speed_kmh": null,
+    "current_vehicle_count": 0,
+    "stopped_vehicle_count": 0,
+    "density_veh_per_km_lane": 0.0,
+    "counts_by_class": {
+      "bicycle": 0,
+      "bus": 0,
+      "car": 0,
+      "motorcycle": 0,
+      "truck": 0
+    },
+    "last_seen": "2026-10-27T12:26:37+07:00",
+    "approved_at": "2026-10-27T10:35:10.261003",
+    "traffic": {
+      "vehicle_count": 0,
+      "average_speed": null,
+      "congestion_level": "UNKNOWN",
+      "congestion_score": 0,
+      "stopped_vehicle_count": 0,
+      "density_veh_per_km_lane": 0.0,
+      "counts_by_class": {
+        "bicycle": 0,
+        "bus": 0,
+        "car": 0,
+        "motorcycle": 0,
+        "truck": 0
+      }
+    },
+    "system": {
+      "cpu_usage": 44,
+      "gpu_usage": 2,
+      "ram_usage": 83,
+      "temperature": 71.0,
+      "fps": 23.6
+    },
+    "latest_health": {
+      "command_id": "diag-7e6dab0c",
+      "edge_id": "edge-110",
+      "camera_id": "camera-01",
+      "segment_id": "segment-001",
+      "timestamp": "2026-10-27T11:59:09+07:00",
+      "general": {
+        "uptime_seconds": 5128,
+        "boot_time": "2026-10-27T03:33:41+07:00",
+        "service_status": "running"
+      },
+      "network": {
+        "local_ip": "192.168.88.176",
+        "mac_address": "80:32:53:8A:88:B5",
+        "status": "connected"
+      },
+      "hardware": {
+        "cpu_usage_pct": 4,
+        "cpu_cores": 4,
+        "ram_used_mb": 1813,
+        "ram_total_mb": 3956,
+        "ram_usage_pct": 39,
+        "swap_used_mb": 249,
+        "swap_total_mb": 1978,
+        "gpu_usage_pct": 0,
+        "temperature_c": 37.0,
+        "power_mode": "10W_MAXN"
+      },
+      "storage": {
+        "disk_total_gb": 58.41,
+        "disk_free_gb": 17.19,
+        "disk_usage_pct": 66,
+        "outbox_unsent_images": 0
+      },
+      "pipeline": {
+        "camera_status": "streaming",
+        "pipeline_fps": 0.0,
+        "inference_latency_ms": null
+      },
+      "mac_address": "80:32:53:8A:88:B5"
+    },
+    "id_mismatch": false,
+    "serial_number": "1422919111126",
+    "spatial_drift": {
+      "drift_m": 1131927.0,
+      "reported_coords": [
+        20.998412,
+        105.795123
+      ],
+      "saved_coords": [
+        10.852708,
+        106.660508
+      ]
+    }
+  }
+}

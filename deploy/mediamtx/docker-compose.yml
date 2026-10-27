@@ -1,0 +1,15 @@
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: webgis_mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554/tcp"
+      - "8554:8554/udp"
+      - "8888:8888/tcp"
+      - "8889:8889/tcp"
+      - "8189:8189/udp"
+    environment:
+      - MTX_WEBRTCADDITIONALHOSTS=${MEDIAMTX_HOST:-192.168.88.193}
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro

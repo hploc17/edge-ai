@@ -1,0 +1,20 @@
+{
+  "analysis_roi": [
+    [0.15625, 0.25],
+    [0.84375, 0.25],
+    [0.921875, 0.902778],
+    [0.078125, 0.902778]
+  ],
+  "counting_rule": "confirmed_tracks_inside_analysis_roi",
+  "detection_margin_px": 100,
+  "detection_roi": [
+    [0.0, 0.111111],
+    [0.999219, 0.111111],
+    [0.999219, 0.998611],
+    [0.0, 0.998611]
+  ],
+  "frame_height": 720,
+  "frame_width": 1280,
+  "mode": "current_vehicles_in_roi",
+  "schema_version": 1
+}
