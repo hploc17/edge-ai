@@ -141,6 +141,8 @@ def build_webgis_package(zip_path: Path):
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         # WebGIS Scripts & Docs at root level
         for f in [
+            '.env',
+            '.env.example',
             'start_webgis.bat',
             'start_webgis.sh',
             'start_webgis_prod.bat',

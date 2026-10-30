@@ -118,7 +118,8 @@ async def start_device_live(edge_id: str, request: Request):
             detail="AI Pipeline chưa khởi động trên Jetson (Camera đang tự do để setup ROI). Hãy chạy main.py trước khi xem Live Cam."
         )
 
-    urls = _build_stream_urls(edge_id, request=request)
+    stream_edge_id = node.get("actual_hardware_id") or edge_id
+    urls = _build_stream_urls(stream_edge_id, request=request)
     try:
         # Fix V6: Gửi kèm địa chỉ RTSP ingest URL qua MQTT để Jetson tự nhận diện máy chủ MediaMTX
         res = await _send_live_mqtt_command(
@@ -184,7 +185,8 @@ async def get_device_live_info(edge_id: str, request: Request):
     if not node:
         raise HTTPException(status_code=404, detail=f"Thiết bị '{edge_id}' không tồn tại")
 
-    urls = _build_stream_urls(edge_id, request=request)
+    stream_edge_id = node.get("actual_hardware_id") or edge_id
+    urls = _build_stream_urls(stream_edge_id, request=request)
     return {
         "edge_id": edge_id,
         "device_name": node.get("device_name", edge_id),

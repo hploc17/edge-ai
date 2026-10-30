@@ -553,11 +553,33 @@ def make_stop_pipeline_handler(agent_state):
             agent_state['crash_retry_count'] = 0
             agent_state['last_start_data'] = None
             proc = agent_state.get('pipeline_process')
-            if proc is None or proc.poll() is not None:
-                agent_state['pipeline_process'] = None
-                agent_state['pipeline_current_cmd'] = None
-                return 'No pipeline is currently running'
-            graceful_stop_pipeline(proc)
+            stopped_any = False
+            if proc is not None and proc.poll() is None:
+                graceful_stop_pipeline(proc)
+                stopped_any = True
+
+            # Quét và dọn sạch bất kỳ tiến trình main.py nào còn sót lại trên OS Linux (kể cả bật ngoài)
+            if sys.platform.startswith('linux'):
+                try:
+                    out = subprocess.check_output(['pgrep', '-f', 'python3.*main.py'], stderr=subprocess.DEVNULL)
+                    for line in out.decode('utf-8', errors='ignore').splitlines():
+                        p_str = line.strip()
+                        if p_str and int(p_str) != os.getpid():
+                            try:
+                                os.kill(int(p_str), signal.SIGTERM)
+                                stopped_any = True
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+                # Giải phóng cảm biến camera CSI ngay lập tức để camera tắt đèn và sẵn sàng chụp preview
+                try:
+                    subprocess.run(['sudo', 'systemctl', 'restart', 'nvargus-daemon'],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+                except Exception:
+                    pass
+
             agent_state['pipeline_process'] = None
             agent_state['pipeline_started_at'] = None
             agent_state['pipeline_current_cmd'] = None
@@ -567,6 +589,9 @@ def make_stop_pipeline_handler(agent_state):
                     log_f.close()
                 except Exception:
                     pass
+
+            if not stopped_any:
+                return 'No pipeline was running (camera sensor released)'
             return 'Pipeline stopped successfully'
     return handler
 
@@ -622,6 +647,24 @@ def capture_direct_csi_jpeg(sensor_id=0, width=1280, height=720, quality=80):
             return data
     except Exception as e:
         _log('Direct gst-launch CSI capture failed: %s' % e)
+
+    # Tự động giải phóng nvargus-daemon nếu phiên camera trước đó chưa nhả cảm biến
+    try:
+        subprocess.run(['sudo', 'systemctl', 'restart', 'nvargus-daemon'],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+        time.sleep(1.0)
+        res = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8)
+        if res.returncode == 0 and os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 1000:
+            with open(tmp_path, 'rb') as f:
+                data = f.read()
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+            _log('capture_direct_csi_jpeg: Captured %d bytes via gst-launch after daemon restart' % len(data))
+            return data
+    except Exception:
+        pass
 
     # Cách 2: OpenCV GStreamer pipeline
     try:
@@ -1098,9 +1141,9 @@ def run_agent():
                     last_data = agent_state.get('last_start_data')
                     source_type = (last_data or {}).get('params', {}).get('source_type', 'file')
 
-                    # 1. Người dùng chủ động dừng trên WebGIS -> Không restart
-                    if intentional:
-                        _log('Pipeline stopped intentionally by user. Watchdog idle.')
+                    # 1. Người dùng chủ động dừng trên WebGIS hoặc không có dữ liệu khởi động -> Không restart
+                    if intentional or not last_data:
+                        _log('Pipeline stopped intentionally by user or idle. Watchdog idle.')
                         continue
 
                     # 2. File video chạy hết tự nhiên (EOS: retcode == 0) -> Không restart, báo Web
