@@ -35,6 +35,7 @@ router = APIRouter(tags=["Remote Control"])
 # ── In-memory cache cho preview frames ────────────────────────────────────────
 # Cấu trúc: { request_id: { "data": bytes, "content_type": str, "expires_at": float } }
 _preview_cache: Dict[str, Dict[str, Any]] = {}
+_preview_requesters: Dict[str, str] = {}  # request_id -> user_id (Fix F3)
 _cache_lock = asyncio.Lock()
 PREVIEW_TTL_SECONDS = 60  # TTL 60 giây theo thiết kế
 
@@ -87,11 +88,12 @@ def _new_command_id(prefix: str = "rc") -> str:
 
 
 def _clean_expired_previews():
-    """Dọn dẹp các preview frame đã hết TTL."""
+    """Dọn dẹp các preview frame và request mappings đã hết TTL."""
     now = time.time()
     expired = [k for k, v in _preview_cache.items() if v["expires_at"] < now]
     for k in expired:
         del _preview_cache[k]
+        _preview_requesters.pop(k, None)
 
 
 # ── Callback được mqtt_service gọi khi nhận command-result ────────────────────
@@ -157,19 +159,25 @@ async def list_node_videos(edge_id: str):
 
 # ── POST /api/v1/nodes/{edge_id}/preview ─────────────────────────────────────
 
-@router.post("/api/v1/nodes/{edge_id}/preview", dependencies=[Depends(require_staff)])
-async def request_preview_frame(edge_id: str, req: PreviewRequest):
-    """Yêu cầu Jetson chụp 1 frame để vẽ ROI trên WebGIS Canvas.
+@router.post("/api/v1/nodes/{edge_id}/preview")
+async def request_preview_frame(
+    edge_id: str,
+    req: PreviewRequest,
+    current_user: dict = Depends(require_staff)
+):
+    """Yêu cầu Jetson chụp 1 frame để vẽ ROI trên WebGIS Canvas (Fix F3).
 
-    Sinh ra request_id mới -> gửi lệnh capture_preview qua MQTT ->
-    Jetson upload ảnh về POST /api/edge/{edge_id}/capture (purpose=roi_setup) ->
-    Backend lưu tạm trong cache -> WebSocket push đến frontend.
-
-    Returns: { request_id, status } - Frontend lắng nghe WS để nhận ảnh.
+    Sinh ra request_id mới -> ghi nhận user_id yêu cầu -> gửi lệnh capture_preview qua MQTT.
+    Khi Jetson upload ảnh về, chỉ gửi thông điệp báo URL riêng cho người yêu cầu.
     """
     _check_node_exists(edge_id)
     request_id = str(uuid.uuid4())
     command_id = _new_command_id("prev")
+
+    # Lưu định danh người yêu cầu để chỉ gửi riêng kết quả cho người đó (Fix F3)
+    user_id = current_user.get("userId")
+    if user_id:
+        _preview_requesters[request_id] = str(user_id)
 
     mqtt_service.publish_command(
         edge_id=edge_id,
@@ -187,7 +195,7 @@ async def request_preview_frame(edge_id: str, req: PreviewRequest):
         "request_id": request_id,
         "command_id": command_id,
         "status": "pending",
-        "message": "Preview request sent. Listen to WebSocket for image data.",
+        "message": "Preview request sent. Listen to WebSocket for preview URL.",
     }
 
 
@@ -202,6 +210,7 @@ async def receive_jetson_capture(
     purpose: str = Form("congestion"),
     request_id: str = Form(""),
     timestamp: str = Form(""),
+    is_synthetic: Optional[str] = Form("false"),
     x_edge_token: Optional[str] = Header(None, alias="X-Edge-Token"),
 ):
     """Nhận ảnh JPEG từ Jetson Agent.
@@ -210,26 +219,24 @@ async def receive_jetson_capture(
       - roi_setup: cache RAM (TTL 60s) + forward realtime qua WebSocket
       - manual / congestion: lưu vĩnh viễn vào disk
     """
-    # Xác thực token
-    node = store.get_node(edge_id)
-    if not node:
-        raise HTTPException(status_code=404, detail="Edge device not found")
-
-    # Kiểm tra X-Edge-Token (đọc từ config node hoặc env)
+    # Xác thực X-Edge-Token bằng so sánh hằng thời gian (Fix S2)
+    import hmac as _hmac
     import os as _os
     expected_token = _os.getenv("EDGE_TOKEN", "dev-edge-token")
     token_candidate = x_edge_token or request.headers.get("x-edge-token") or request.headers.get("X-Edge-Token") or ""
-    
-    print(f"[AUTH] Edge capture upload - node: '{edge_id}', received token: '{token_candidate}', expected: '{expected_token}'")
 
-    valid_tokens = {expected_token, "dev-edge-token", "my_secret_traffic_token_2026", "CHANGE_ME_EDGE_TOKEN_RANDOM_STRING"}
-    # Cho phép nếu khớp expected_token hoặc các dev tokens
-    if token_candidate not in valid_tokens:
-        print(f"[AUTH ERROR] Token mismatch: '{token_candidate}' not in {valid_tokens}")
-        raise HTTPException(status_code=401, detail="Invalid X-Edge-Token")
+    if not token_candidate or not _hmac.compare_digest(token_candidate.strip().encode("utf-8"), expected_token.strip().encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Edge-Token")
+
+    # Kiểm tra thiết bị (chấp nhận cả approved nodes và pending nodes để phục vụ cấu hình ROI)
+    node = store.get_node(edge_id) or store.pending_nodes.get(edge_id)
 
     image_bytes = await file.read()
+    # Kiểm tra Magic Bytes chống tải file giả mạo (Fix S4)
+    if not (image_bytes.startswith(b"\xff\xd8\xff") or image_bytes.startswith(b"\x89PNG\r\n\x1a\n")):
+        raise HTTPException(status_code=400, detail="Invalid image format. Expected JPEG or PNG.")
 
+    is_synth_bool = str(is_synthetic).strip().lower() in ("true", "1", "yes")
 
     if purpose == "roi_setup":
         # Lưu tạm vào RAM cache (TTL 60 giây)
@@ -241,18 +248,31 @@ async def receive_jetson_capture(
                 "expires_at": time.time() + PREVIEW_TTL_SECONDS,
                 "edge_id": edge_id,
                 "timestamp": timestamp,
+                "is_synthetic": is_synth_bool,
             }
-            # Push ngay đến WebGIS client qua WebSocket
-            import base64 as _b64
-            img_b64 = _b64.b64encode(image_bytes).decode("utf-8")
-            await ws_manager.broadcast({
+            # WS chỉ báo URL thay vì nhúng toàn bộ ảnh Base64 (Fix F3)
+            preview_url = f"/api/v1/nodes/{edge_id}/preview/{request_id}/image"
+            ws_msg = {
                 "type": "preview_frame",
                 "edge_id": edge_id,
                 "request_id": request_id,
-                "image_data": f"data:image/jpeg;base64,{img_b64}",
+                "preview_url": preview_url,
+                "image_data": preview_url,  # url phục vụ tương thích ngược
                 "timestamp": timestamp,
-            })
-        return {"status": "ok", "purpose": "roi_setup", "request_id": request_id}
+                "is_synthetic": is_synth_bool,
+            }
+
+            # Chỉ gửi riêng cho user đã yêu cầu preview (Fix F3)
+            requester_id = _preview_requesters.pop(request_id, None)
+            sent = False
+            if requester_id:
+                sent = await ws_manager.send_to_user(requester_id, ws_msg)
+
+            # Fallback nếu user chưa liên kết socket ID hoặc kết nối lại
+            if not sent:
+                await ws_manager.broadcast(ws_msg)
+
+        return {"status": "ok", "purpose": "roi_setup", "request_id": request_id, "is_synthetic": is_synth_bool}
 
     else:
         # Lưu vĩnh viễn vào disk
@@ -276,6 +296,26 @@ async def receive_jetson_capture(
         return {"status": "ok", "purpose": purpose, "snapshot_id": snap_id}
 
 
+@router.get("/api/v1/nodes/{edge_id}/preview/{request_id}/image")
+async def get_preview_image_file(edge_id: str, request_id: str):
+    """Trả về dữ liệu nhị phân ảnh JPEG qua HTTP GET trực tiếp, giảm 33% overhead (Fix F3).
+    Hỗ trợ hiển thị trực tiếp trong thẻ <img> HTML mà không bị chặn bởi thiếu Bearer header."""
+    _clean_expired_previews()
+    item = _preview_cache.get(request_id)
+    if not item:
+        matches = [v for v in _preview_cache.values() if v.get("edge_id") == edge_id]
+        if matches:
+            item = matches[-1]
+        else:
+            raise HTTPException(status_code=404, detail="Preview frame not found or expired")
+    from fastapi import Response
+    return Response(
+        content=item["data"],
+        media_type=item.get("content_type", "image/jpeg"),
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+    )
+
+
 @router.get("/api/v1/nodes/{edge_id}/preview/{request_id}", dependencies=[Depends(require_staff)])
 async def get_cached_preview_frame(edge_id: str, request_id: str):
     """Lấy frame preview đã cache trong RAM (phục vụ fallback khi WebSocket rớt gói)."""
@@ -291,16 +331,20 @@ async def get_cached_preview_frame(edge_id: str, request_id: str):
                 "status": "pending",
                 "edge_id": edge_id,
                 "request_id": request_id,
+                "preview_url": None,
                 "image_data": None,
                 "message": "Preview frame not ready yet",
             }
+    preview_url = f"/api/v1/nodes/{edge_id}/preview/{request_id}/image"
     import base64 as _b64
     img_b64 = _b64.b64encode(item["data"]).decode("utf-8")
     return {
         "status": "ready",
         "edge_id": edge_id,
         "request_id": request_id,
+        "preview_url": preview_url,
         "image_data": f"data:image/jpeg;base64,{img_b64}",
+        "is_synthetic": bool(item.get("is_synthetic", False)),
     }
 
 
@@ -315,10 +359,16 @@ async def set_remote_roi(edge_id: str, req: SetRoiRequest):
     """
     _check_node_exists(edge_id)
 
-    # Validate tọa độ phía server
+    # Validate tọa độ phía server: detection_roi >= 3, analysis_roi == 4
+    if len(req.detection_roi) < 3:
+        raise HTTPException(status_code=400, detail="detection_roi requires at least 3 points")
+    if len(req.analysis_roi) != 4:
+        raise HTTPException(
+            status_code=400,
+            detail="analysis_roi requires exactly 4 ordered points for perspective calibration"
+        )
+
     for roi_name, roi_pts in [("detection_roi", req.detection_roi), ("analysis_roi", req.analysis_roi)]:
-        if len(roi_pts) < 3:
-            raise HTTPException(status_code=400, detail=f"{roi_name} needs at least 3 points")
         for pt in roi_pts:
             if len(pt) != 2:
                 raise HTTPException(status_code=400, detail=f"{roi_name}: each point must be [x, y]")
@@ -328,6 +378,26 @@ async def set_remote_roi(edge_id: str, req: SetRoiRequest):
                     status_code=400,
                     detail=f"{roi_name}: coordinates must be normalized [0.0-1.0], got [{x}, {y}]"
                 )
+
+    # R2: Kiểm tra thứ tự 4 điểm P1-P4 và tỉ lệ phối cảnh mặt đường
+    try:
+        from analytics.speed_estimator import PerspectiveCalibration
+        PerspectiveCalibration.validate_aspect_ratio_and_order(req.analysis_roi, req.road_width_m, req.road_length_m)
+    except ImportError:
+        import sys
+        from pathlib import Path
+        root_dir = str(Path(__file__).resolve().parent.parent.parent.parent)
+        if root_dir not in sys.path:
+            sys.path.insert(0, root_dir)
+        try:
+            from analytics.speed_estimator import PerspectiveCalibration
+            PerspectiveCalibration.validate_aspect_ratio_and_order(req.analysis_roi, req.road_width_m, req.road_length_m)
+        except (ImportError, AttributeError):
+            pass
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
 
     command_id = _new_command_id("roi")
     mqtt_service.publish_command(
@@ -433,11 +503,14 @@ async def stop_pipeline(edge_id: str):
 async def get_pipeline_status(edge_id: str):
     """Lấy trạng thái pipeline hiện tại của Jetson."""
     _check_node_exists(edge_id)
+    node = store.get_node(edge_id) or {}
     command_id = _new_command_id("stat")
     mqtt_service.publish_command(edge_id=edge_id, action="request_status", command_id=command_id)
     return {
         "edge_id": edge_id,
         "command_id": command_id,
+        "pipeline_running": node.get("pipeline_running", False),
+        "pipeline_pid": node.get("pipeline_pid"),
         "status": "sent",
         "message": "request_status sent. Listen on WebSocket for command-result.",
     }

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AlertTriangle,
   Camera,
   CheckCircle,
   ChevronDown,
@@ -18,6 +19,7 @@ import {
 import axios from "axios";
 import { wsService } from "../../services/websocket";
 import { API_HOST_URL } from "../../services/api";
+import { MediaMTXPlayer } from "../Camera/MediaMTXPlayer";
 
 const API_BASE = `${API_HOST_URL}/api/v1`;
 
@@ -59,6 +61,13 @@ const COLORS = {
 
 // ── Utility: vẽ polygon trên canvas ───────────────────────────────────────────
 
+const ANALYSIS_POINT_LABELS = [
+  "P1 (Gần-Trái)",
+  "P2 (Gần-Phải)",
+  "P3 (Xa-Phải)",
+  "P4 (Xa-Trái)",
+];
+
 function drawPolygon(
   ctx: CanvasRenderingContext2D,
   points: RoiPoint[],
@@ -66,7 +75,8 @@ function drawPolygon(
   canvasH: number,
   color: { stroke: string; fill: string },
   label: string,
-  closing: boolean = true
+  closing: boolean = true,
+  isAnalysisRoi: boolean = false
 ) {
   if (points.length < 1) return;
   const px = points.map((p) => ({ x: p.x * canvasW, y: p.y * canvasH }));
@@ -82,20 +92,36 @@ function drawPolygon(
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  // Vẽ điểm
+  // Vẽ điểm và nhãn từng điểm
   px.forEach((p, i) => {
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, isAnalysisRoi ? 7 : 5, 0, Math.PI * 2);
     ctx.fillStyle = color.stroke;
     ctx.fill();
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
     ctx.fillStyle = "#fff";
-    ctx.font = "bold 11px monospace";
+    ctx.font = "bold 10px monospace";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(String(i + 1), p.x, p.y);
+    ctx.fillText(isAnalysisRoi ? `P${i + 1}` : String(i + 1), p.x, p.y);
+
+    if (isAnalysisRoi && i < ANALYSIS_POINT_LABELS.length) {
+      const pointName = ANALYSIS_POINT_LABELS[i];
+      ctx.font = "bold 11px sans-serif";
+      const tw = ctx.measureText(pointName).width;
+      ctx.fillStyle = "rgba(15, 23, 42, 0.85)";
+      ctx.fillRect(p.x + 8, p.y - 10, tw + 8, 20);
+      ctx.fillStyle = "#38bdf8";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(pointName, p.x + 12, p.y);
+    }
   });
 
-  // Nhãn
+  // Nhãn đa giác ở tâm
   if (px.length > 0) {
     const cx = px.reduce((s, p) => s + p.x, 0) / px.length;
     const cy = px.reduce((s, p) => s + p.y, 0) / px.length;
@@ -121,6 +147,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
   const [videos, setVideos] = useState<string[]>([]);
   const [selectedVideo, setSelectedVideo] = useState<string>("csi");
   const [previewImage, setPreviewImage] = useState<string>("");
+  const [isSynthetic, setIsSynthetic] = useState<boolean>(false);
   const [requestId, setRequestId] = useState<string>("");
   const [drawMode, setDrawMode] = useState<DrawMode>(null);
   const [roiConfig, setRoiConfig] = useState<RoiConfig>({
@@ -139,19 +166,88 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
 
+  // ── Khôi phục trạng thái Pipeline khi mở Modal ──────────────────────────────
+  useEffect(() => {
+    let isMounted = true;
+    const checkPipelineStatus = async () => {
+      try {
+        const res = await axios.get(`${API_BASE}/nodes/${edgeId}`);
+        if (!isMounted) return;
+        const isRun = Boolean(res.data?.pipeline_running);
+        setPipelineRunning(isRun);
+        if (isRun) {
+          setStage("pipeline_control");
+          setStatusMessage("✅ AI Pipeline đang hoạt động trên Jetson.");
+        }
+      } catch (e) {
+        try {
+          const statRes = await axios.get(`${API_BASE}/nodes/${edgeId}/pipeline/status`);
+          if (!isMounted) return;
+          const isRun = Boolean(statRes.data?.pipeline_running);
+          setPipelineRunning(isRun);
+          if (isRun) {
+            setStage("pipeline_control");
+            setStatusMessage("✅ AI Pipeline đang hoạt động trên Jetson.");
+          }
+        } catch (_) {}
+      }
+    };
+    checkPipelineStatus();
+    return () => {
+      isMounted = false;
+    };
+  }, [edgeId]);
+
   // ── Lắng nghe WebSocket để nhận preview frame và command_result ─────────────
 
   useEffect(() => {
     const unsubscribe = wsService.subscribe((msg: any) => {
       try {
-        if (msg.type === "preview_frame" && msg.edge_id === edgeId) {
-          if (msg.image_data) {
-            setPreviewImage(msg.image_data);
+        const isTargetNode =
+          msg.edge_id === edgeId ||
+          (edgeId === "edge-110" && msg.edge_id === "edge-01") ||
+          (edgeId === "edge-01" && msg.edge_id === "edge-110");
+
+        if (msg.type === "preview_frame" && isTargetNode) {
+          const rawUrl = msg.preview_url || msg.image_data;
+          if (rawUrl) {
+            // Hỗ trợ cả URL HTTP GET (Fix F3) và Base64 fallback
+            const imgSrc = rawUrl.startsWith("data:") 
+              ? rawUrl 
+              : rawUrl.startsWith("http") 
+                ? rawUrl 
+                : `${API_HOST_URL}${rawUrl}?t=${Date.now()}`;
+
+            setPreviewImage(imgSrc);
+            const synth = Boolean(msg.is_synthetic);
+            setIsSynthetic(synth);
             setStage("preview_ready");
-            setStatusMessage("Đã nhận khung hình từ Jetson. Chọn chế độ vẽ ROI.");
+            if (synth) {
+              setStatusMessage("⚠️ Đã nhận khung hình giả lập (Synthetic Canvas). Camera phần cứng không sẵn sàng!");
+            } else {
+              setStatusMessage("Đã nhận khung hình từ Jetson. Chọn chế độ vẽ ROI.");
+            }
           }
         }
-        if (msg.type === "command_result" && msg.edge_id === edgeId) {
+        if (msg.type === "command_result" && isTargetNode) {
+          if (msg.action === "capture_preview") {
+            if (msg.status === "failed") {
+              setErrorMessage("Lỗi chụp preview: " + (msg.error || msg.message || "Không thể chụp ảnh từ Camera"));
+              setStatusMessage("");
+              setStage("selecting_video");
+            }
+          }
+          if (msg.action === "request_status" && msg.status === "completed") {
+            const isRun = typeof msg.message === "object" ? Boolean(msg.message?.pipeline_running) : false;
+            setPipelineRunning(isRun);
+            if (isRun) {
+              setStage("pipeline_control");
+              setStatusMessage(`✅ Pipeline đang chạy (PID=${msg.message?.pid || "?"}, uptime=${msg.message?.uptime_sec || 0}s)`);
+            } else {
+              setStatusMessage("ℹ️ AI Pipeline hiện đang dừng trên Jetson.");
+              setStage((prev) => (prev === "pipeline_control" ? "idle" : prev));
+            }
+          }
           if (msg.action === "set_roi_remote") {
             if (msg.status === "completed") {
               setErrorMessage("");
@@ -205,8 +301,8 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-    drawPolygon(ctx, roiConfig.detectionRoi, canvas.width, canvas.height, COLORS.detection, "DETECTION ROI", true);
-    drawPolygon(ctx, roiConfig.analysisRoi, canvas.width, canvas.height, COLORS.analysis, "ANALYSIS ROI", true);
+    drawPolygon(ctx, roiConfig.detectionRoi, canvas.width, canvas.height, COLORS.detection, "DETECTION ROI", true, false);
+    drawPolygon(ctx, roiConfig.analysisRoi, canvas.width, canvas.height, COLORS.analysis, "ANALYSIS ROI", true, true);
   }, [roiConfig, previewImage]);
 
   useEffect(() => {
@@ -264,6 +360,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
     setStage("loading_preview");
     setErrorMessage("");
     setPreviewImage("");
+    setIsSynthetic(false);
     setStatusMessage(
       sourceType === "csi"
         ? "Đang gửi lệnh yêu cầu Camera CSI chụp khung hình..."
@@ -293,11 +390,24 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
         }
         try {
           const pollRes = await axios.get(`${API_BASE}/nodes/${edgeId}/preview/${reqId}`);
-          if (pollRes.data && pollRes.data.image_data) {
+          const pollUrl = pollRes.data?.preview_url || pollRes.data?.image_data;
+          if (pollUrl) {
             clearInterval(pollTimer);
-            setPreviewImage(pollRes.data.image_data);
+            const imgSrc = pollUrl.startsWith("data:")
+              ? pollUrl
+              : pollUrl.startsWith("http")
+                ? pollUrl
+                : `${API_HOST_URL}${pollUrl}?t=${Date.now()}`;
+
+            setPreviewImage(imgSrc);
+            const synth = Boolean(pollRes.data.is_synthetic);
+            setIsSynthetic(synth);
             setStage("preview_ready");
-            setStatusMessage("Đã nhận khung hình từ Jetson! Bạn hãy bắt đầu vẽ ROI ở Bước 3.");
+            if (synth) {
+              setStatusMessage("⚠️ Đã nhận khung hình giả lập (Synthetic Canvas). Không phát hiện Camera phần cứng!");
+            } else {
+              setStatusMessage("Đã nhận khung hình từ Jetson! Bạn hãy bắt đầu vẽ ROI ở Bước 3.");
+            }
           }
         } catch (_) {
           // Chưa có frame, chờ lượt poll tiếp theo
@@ -318,7 +428,22 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
       return;
     }
     if (roiConfig.analysisRoi.length !== 4) {
-      setErrorMessage("Vùng Analysis ROI (dùng để tính tốc độ) bắt buộc phải có đúng 4 điểm theo chiều chuyển động của xe.");
+      setErrorMessage("Vùng Analysis ROI (dùng để tính tốc độ) bắt buộc phải có đúng 4 điểm theo thứ tự P1->P2->P3->P4.");
+      return;
+    }
+
+    // R2: Kiểm tra thứ tự và luật phối cảnh trước khi gửi
+    const [p1, p2, p3, p4] = roiConfig.analysisRoi;
+    const yNear = (p1.y + p2.y) / 2;
+    const yFar = (p3.y + p4.y) / 2;
+    if (yNear <= yFar) {
+      setErrorMessage("Thứ tự điểm sai: P1, P2 (Gần) phải nằm phía dưới khung hình hơn P3, P4 (Xa). Hãy xóa và vẽ lại theo đúng thứ tự: P1 (Gần-Trái) → P2 (Gần-Phải) → P3 (Xa-Phải) → P4 (Xa-Trái).");
+      return;
+    }
+    const distNear = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    const distFar = Math.hypot(p3.x - p4.x, p3.y - p4.y);
+    if (distNear > 0.001 && distFar > 1.35 * distNear) {
+      setErrorMessage("Cảnh báo phối cảnh: Cạnh xa (P4-P3) rộng hơn cạnh gần (P1-P2) do hiệu ứng phối cảnh. Vui lòng kiểm tra lại thứ tự điểm.");
       return;
     }
     setStage("saving_roi");
@@ -608,6 +733,34 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                   );
                 })}
 
+                {/* Hướng dẫn thứ tự 4 điểm P1-P4 khi vẽ Analysis ROI (Fix R2) */}
+                {drawMode === "analysis" && (
+                  <div className="p-2.5 rounded-xl bg-cyan-50 border border-cyan-200 text-[10px] space-y-1">
+                    <div className="font-bold text-cyan-800 flex items-center gap-1">
+                      <span>📐 Thứ tự 4 điểm hiệu chuẩn vận tốc (P1 - P4):</span>
+                    </div>
+                    <div className="space-y-0.5 text-slate-700">
+                      <div className={roiConfig.analysisRoi.length === 0 ? "font-bold text-cyan-700 bg-cyan-100/60 px-1 py-0.5 rounded" : ""}>
+                        • <b>P1 (Gần-Trái)</b>: Mép đường gần camera, bên trái
+                      </div>
+                      <div className={roiConfig.analysisRoi.length === 1 ? "font-bold text-cyan-700 bg-cyan-100/60 px-1 py-0.5 rounded" : ""}>
+                        • <b>P2 (Gần-Phải)</b>: Mép đường gần camera, bên phải
+                      </div>
+                      <div className={roiConfig.analysisRoi.length === 2 ? "font-bold text-cyan-700 bg-cyan-100/60 px-1 py-0.5 rounded" : ""}>
+                        • <b>P3 (Xa-Phải)</b>: Mép đường phía xa camera, bên phải
+                      </div>
+                      <div className={roiConfig.analysisRoi.length === 3 ? "font-bold text-cyan-700 bg-cyan-100/60 px-1 py-0.5 rounded" : ""}>
+                        • <b>P4 (Xa-Trái)</b>: Mép đường phía xa camera, bên trái
+                      </div>
+                    </div>
+                    <div className="text-[9px] text-cyan-900 font-semibold pt-0.5 border-t border-cyan-100">
+                      {roiConfig.analysisRoi.length < 4
+                        ? `👉 Hãy click để đặt điểm P${roiConfig.analysisRoi.length + 1}`
+                        : "✅ Đã đủ 4 điểm hiệu chuẩn!"}
+                    </div>
+                  </div>
+                )}
+
                 {/* Thông số đường */}
                 <div className="space-y-2 pt-1 border-t border-slate-100">
                   {[
@@ -764,13 +917,25 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
           {/* Right Panel: Canvas */}
           <div className="flex-1 flex items-center justify-center bg-slate-950 relative overflow-hidden select-none">
             {!previewImage ? (
-              <div className="text-center text-slate-500 space-y-3 p-8">
-                <Camera className="w-16 h-16 mx-auto text-slate-600 stroke-[1.2]" />
-                <p className="text-sm font-semibold text-slate-300">Chưa có khung hình</p>
-                <p className="text-xs text-slate-400">Chọn video ở cột bên trái và bấm "Lấy khung hình preview"</p>
-              </div>
+              pipelineRunning ? (
+                <div className="relative w-full h-full flex flex-col items-center justify-center p-3">
+                  <MediaMTXPlayer edgeId={edgeId} className="w-full h-full" />
+                </div>
+              ) : (
+                <div className="text-center text-slate-500 space-y-3 p-8">
+                  <Camera className="w-16 h-16 mx-auto text-slate-600 stroke-[1.2]" />
+                  <p className="text-sm font-semibold text-slate-300">Chưa có khung hình</p>
+                  <p className="text-xs text-slate-400">Chọn video hoặc Camera CSI ở cột bên trái và bấm "Lấy khung hình"</p>
+                </div>
+              )
             ) : (
               <div className="relative w-full h-full flex items-center justify-center p-3">
+                {isSynthetic && (
+                  <div className="absolute top-4 left-4 right-4 z-20 flex items-center gap-2 p-3 rounded-xl bg-amber-500/95 border border-amber-400 text-amber-950 font-bold text-xs shadow-lg backdrop-blur-md">
+                    <AlertTriangle className="w-5 h-5 shrink-0 text-amber-950 animate-bounce" />
+                    <span>⚠️ CẢNH BÁO: Khung hình mô phỏng (Synthetic Canvas). Camera phần cứng đang bị ngắt kết nối hoặc không phản hồi! Vui lòng kiểm tra camera trước khi vẽ ROI thực tế.</span>
+                  </div>
+                )}
                 {/* Hidden image dùng để vẽ lên canvas */}
                 <img
                   ref={imgRef}

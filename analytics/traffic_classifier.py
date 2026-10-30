@@ -11,6 +11,7 @@ This is a trend-extrapolation method, NOT a trained machine-learning model.
 from __future__ import print_function
 
 import math
+import os
 import time
 from collections import deque
 
@@ -50,6 +51,33 @@ def _apply_homography(H, points):
     w = np.where(np.abs(w) < 1e-10, 1e-10, w)
     result = transformed[:, :2] / w
     return result
+
+
+# ---------------------------------------------------------------------------
+# Congestion Thresholds & Colors Definition (Fix A2: Single Source of Truth)
+# ---------------------------------------------------------------------------
+
+CONGESTION_THRESHOLDS = {
+    'FREE_MAX': 35,
+    'SLOW_MAX': 65,
+}
+
+TRAFFIC_COLORS = {
+    'FREE': '#10B981',      # Emerald Green
+    'SLOW': '#F59E0B',      # Amber Orange
+    'CONGESTED': '#EF4444', # Rose Red
+    'UNKNOWN': '#6B7280',   # Gray
+}
+
+def get_traffic_color(congestion_score: int, traffic_status: str = None) -> str:
+    """Hàm chuẩn hóa màu duy nhất cho toàn hệ thống (Fix A2)."""
+    if traffic_status == 'CONGESTED' or congestion_score >= CONGESTION_THRESHOLDS['SLOW_MAX']:
+        return TRAFFIC_COLORS['CONGESTED']
+    elif traffic_status == 'SLOW' or congestion_score >= CONGESTION_THRESHOLDS['FREE_MAX']:
+        return TRAFFIC_COLORS['SLOW']
+    elif traffic_status == 'FREE' or congestion_score < CONGESTION_THRESHOLDS['FREE_MAX']:
+        return TRAFFIC_COLORS['FREE']
+    return TRAFFIC_COLORS['UNKNOWN']
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +131,11 @@ class TrafficStateModel(object):
         self.slow_max_score = float(slow_max_score)
         self.congested_min_score = float(congested_min_score)
 
+        # Ngưỡng thời gian phát hiện xe đứng yên / tai nạn / chết máy (Fix A3)
+        self.stationary_incident_threshold_s = float(os.getenv('STATIONARY_INCIDENT_SECONDS', '30.0'))
+        self._stationary_start_time = None
+        self._incident_detected = False
+
         # Smoothing: deque of (timestamp, raw_state)
         self._state_history = deque()
         self._current_smooth = self.UNKNOWN
@@ -125,7 +158,8 @@ class TrafficStateModel(object):
             avg_speed_kmh, density, stopped_ratio,
             median_speed_kmh=median_speed_kmh,
             vehicle_count=vehicle_count,
-            max_speed_kmh=max_speed_kmh
+            max_speed_kmh=max_speed_kmh,
+            timestamp=timestamp
         )
         self._state_history.append((float(timestamp), raw))
 
@@ -149,15 +183,28 @@ class TrafficStateModel(object):
         return smooth, score
 
     def _raw_classify(self, avg_speed_kmh, density, stopped_ratio,
-                      median_speed_kmh=None, vehicle_count=None, max_speed_kmh=None):
+                      median_speed_kmh=None, vehicle_count=None, max_speed_kmh=None,
+                      timestamp=None):
         effective_speed = median_speed_kmh if median_speed_kmh is not None else avg_speed_kmh
         if effective_speed is None:
             return self.UNKNOWN
 
-        # Guard Level 0: Low vehicle count guard
-        # Trên một đoạn đường, <= 2 xe không thể tạo thành kẹt xe (kể cả dừng đỗ lề đường)
+        # Guard Level 0: Low vehicle count guard & Stationary Incident Detection (Fix A3)
+        # Trên một đoạn đường, <= 2 xe không thể tạo thành kẹt xe diện rộng,
+        # NHƯNG nếu xe đứng yên bất động kéo dài quá ngưỡng (vd > 30s) -> Kích hoạt cảnh báo sự cố SLOW
         if vehicle_count is not None:
             if vehicle_count <= 2:
+                if vehicle_count > 0 and stopped_ratio >= 0.50:
+                    now_ts = float(timestamp) if timestamp is not None else time.time()
+                    if self._stationary_start_time is None:
+                        self._stationary_start_time = now_ts
+                    stationary_dur = now_ts - self._stationary_start_time
+                    if stationary_dur >= self.stationary_incident_threshold_s:
+                        self._incident_detected = True
+                        return self.SLOW
+                else:
+                    self._stationary_start_time = None
+                    self._incident_detected = False
                 return self.FREE
             if vehicle_count <= 4 and density < self.slow_density:
                 # Nếu có xe đang lưu thông tốt (>= 20 km/h), đảm bảo là FREE
@@ -213,8 +260,10 @@ class TrafficStateModel(object):
         if density <= 0.0 and (effective_speed is None or effective_speed >= self.free_speed_kmh):
             return 0
 
-        # Guard for low vehicle count (<= 2 xe không bao giờ đạt điểm kẹt xe)
+        # Guard for low vehicle count (Fix A3: <= 2 xe bình thường <= 15, nếu tai nạn/chết máy lâu dài đạt mức cảnh báo)
         if vehicle_count is not None and vehicle_count <= 2:
+            if getattr(self, '_incident_detected', False):
+                return 45  # Mức điểm cảnh báo SLOW (35-65) khi phát hiện sự cố đứng yên kéo dài
             return min(15, int(round(stopped_ratio * 15.0)))
 
         score = 0.0
@@ -488,6 +537,7 @@ class TrafficAnalyzer(object):
             'density_raw_veh_per_km_lane': density_raw,
             'density_pce_per_km_lane': pce_density,
             'density_veh_per_km_lane': density_raw,  # alias for backward compatibility with frontend and existing tests
+            'density_pcu_per_km_lane': pce_density,  # explicit PCU alias (Fix A1)
             'roi_entry_rate_veh_per_min': roi_entry_rate,
             'estimated_flow_veh_per_min': estimated_flow_per_min,
             'estimated_flow_veh_per_hour': estimated_flow_per_hour,
@@ -495,6 +545,7 @@ class TrafficAnalyzer(object):
             'stopped_vehicle_ratio': round(stopped_ratio, 3),
             'traffic_status': state,
             'congestion_score': congestion_score,
+            'is_incident': getattr(self._state_model, '_incident_detected', False),
             'forecast': forecast,
             'current_by_class': counts_by_class,  # internal alias
         }

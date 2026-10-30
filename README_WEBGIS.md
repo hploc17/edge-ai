@@ -35,7 +35,7 @@ Nếu bạn chưa có thiết bị Jetson Nano hoặc Camera ngoài thực đị
 - **Windows:** Click đúp file [`simulate_traffic.bat`](simulate_traffic.bat)
 - **Hoặc Terminal:**
   ```bash
-  python webgis/tools/simulate_edge.py
+  python tools/simulate_edge.py
   ```
 Sau khi bật, bản đồ WebGIS sẽ hiển thị ngay vị trí camera `edge-01`, lưu lượng xe và các thông số telemetry thời gian thực.
 

@@ -10,6 +10,6 @@ services:
       - "8889:8889/tcp"
       - "8189:8189/udp"
     environment:
-      - MTX_WEBRTCADDITIONALHOSTS=${MEDIAMTX_HOST:-192.168.88.193}
+      - MTX_WEBRTCADDITIONALHOSTS=${MEDIAMTX_HOST:-localhost}
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro

@@ -63,7 +63,12 @@ if os.path.isfile(root_env_file):
 elif os.path.isfile(str(SNAPSHOT_DIR / '.env')):
     load_env_file(str(SNAPSHOT_DIR / '.env'))
 
-os.environ.setdefault('BACKEND_URL', 'http://192.168.1.26:8000')
+# IPC Trigger Files (Fix V3: Nhận trigger chụp ảnh từ Agent khi pipeline đang chạy)
+SNAPSHOT_TRIGGER_FILE = str(SCRIPT_DIR / '.snapshot_trigger')
+PREVIEW_TRIGGER_FILE = str(SCRIPT_DIR / '.preview_trigger')
+LATEST_PREVIEW_FILE = str(SCRIPT_DIR / '.latest_preview.jpg')
+
+os.environ.setdefault('BACKEND_URL', 'http://localhost:8000')
 os.environ.setdefault('EDGE_TOKEN', 'dev-edge-token')
 os.environ.setdefault('MQTT_HOST',
                       '829e7cb26c594257a7470e5a5af58064.s1.eu.hivemq.cloud')
@@ -99,7 +104,7 @@ from analytics.speed_estimator import (
     StreamTimestamp,
     TrackSpeedEstimator,
 )
-from communication.mqtt_client import MQTTPublisher, HeartbeatThread
+from communication.mqtt_client import MQTTPublisher
 from communication.command_router import CommandHandler
 from communication.system_metrics import collect_comprehensive_health, _get_mac_address
 from config.settings import (
@@ -332,7 +337,7 @@ def add_traffic_display_meta(pyds, batch_meta, frame_meta, geometry,
         'Counts: %s | raw:%d\n'
         'Speed avg:%s median:%s km/h | stopped:%d (%.0f%%)\n'
         'Speed/class km/h: %s\n'
-        'Density:%.1f veh/km/lane | ROI entries:%d/min | flow est:%.1f veh/min\n'
+        'Density raw:%.1f v/km (PCE:%.1f pcu/km) | entries:%d/min | flow:%.1f v/m\n'
         '%s' % (
             fps, metrics['current_vehicle_count'],
             metrics['traffic_status'], metrics['congestion_score'],
@@ -342,7 +347,8 @@ def add_traffic_display_meta(pyds, batch_meta, frame_meta, geometry,
             metrics['stopped_vehicle_count'],
             metrics['stopped_vehicle_ratio'] * 100.0,
             _class_speed_text(metrics.get('speed_by_class', {})),
-            metrics['density_veh_per_km_lane'],
+            metrics.get('density_raw_veh_per_km_lane', metrics.get('density_veh_per_km_lane', 0.0)),
+            metrics.get('density_pce_per_km_lane', metrics.get('density_veh_per_km_lane', 0.0)),
             metrics['roi_entry_rate_veh_per_min'],
             metrics['estimated_flow_veh_per_min'],
             _forecast_text(metrics['forecast'])
@@ -419,7 +425,7 @@ def main():
         help='Log detailed per-track diagnostics and timing drift when congestion score > 40'
     )
     parser.add_argument(
-        '--algo-version', default=os.getenv('TRAFFIC_ALGORITHM_VERSION', 'v1'),
+        '--algo-version', default=os.getenv('TRAFFIC_ALGORITHM_VERSION', 'v2'),
         choices=['v1', 'v2'],
         help='Traffic classification algorithm version: v1 (Snapshot) or v2 (Context Dwell-Time)'
     )
@@ -464,6 +470,7 @@ def main():
 
     traffic_config = load_traffic_config(args.roi_config)
 
+    geometry_lock = threading.Lock()
     geometry = {
         'analysis': normalized_to_pixels(traffic_config['analysis_roi']),
         'detection': normalized_to_pixels(traffic_config['detection_roi'])
@@ -555,51 +562,51 @@ def main():
     cmd_handler = None
     current_fps = [0.0]
 
+    try:
+        import queue
+    except ImportError:
+        import Queue as queue
+
+    # Fix V7: Hàng đợi RAM và Worker Thread nền nén JPEG / ghi đĩa ảnh preview, không block GStreamer Pad Probe
+    preview_frame_queue = queue.Queue(maxsize=1)
+    preview_worker_stop = threading.Event()
+
+    def _preview_worker_loop():
+        """Worker thread nền chuyên nén JPEG và ghi đĩa ảnh preview, không block GStreamer Pad Probe (Fix V7)."""
+        while not preview_worker_stop.is_set():
+            try:
+                item = preview_frame_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if item is None:
+                break
+            try:
+                surf_copy, dest_path = item
+                import cv2
+                bgr = cv2.cvtColor(surf_copy, cv2.COLOR_RGBA2BGR)
+                tmp_dest = dest_path + '.tmp'
+                cv2.imwrite(tmp_dest, bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+                if os.path.exists(tmp_dest):
+                    if os.path.exists(dest_path):
+                        try:
+                            os.remove(dest_path)
+                        except Exception:
+                            pass
+                    os.rename(tmp_dest, dest_path)
+                    print('[PIPELINE] Async preview frame encoded & saved to: %s' % dest_path)
+            except Exception as enc_err:
+                print('[PIPELINE WARNING] Error in async preview worker: %s' % enc_err)
+            finally:
+                preview_frame_queue.task_done()
+
+    preview_thread = threading.Thread(target=_preview_worker_loop, name='AsyncPreviewWorker', daemon=True)
+    preview_thread.start()
+
     if not args.no_mqtt:
         pipeline_client_id = os.getenv('MQTT_PIPELINE_CLIENT_ID', '%s-pipeline' % os.getenv('EDGE_ID', 'edge-01'))
-        mqtt_publisher = MQTTPublisher(command_callback=None, client_id=pipeline_client_id)
+        # Fix L4: Pipeline worker is NOT agent (is_agent=False: không phát heartbeat/LWT cấp Node)
+        mqtt_publisher = MQTTPublisher(command_callback=None, client_id=pipeline_client_id, is_agent=False)
         cmd_handler = CommandHandler(mqtt_publisher)
-
-        # Gói 1: Profile & GIS Registration cho WebGIS
-        profile_data = {
-            'event': 'device_registered',
-            'edge_id': os.getenv('EDGE_ID', 'edge-01'),
-            'device_name': DEVICE_NAME,
-            'mac_address': _get_mac_address(),
-            'geo': {
-                'lat': GEO_LAT,
-                'lng': GEO_LNG,
-                'altitude_m': GEO_ALTITUDE_M,
-                'segment_id': os.getenv('SEGMENT_ID', 'segment-001'),
-                'road_name': ROAD_NAME,
-                'heading': CAMERA_HEADING,
-                'fov': CAMERA_FOV,
-            },
-            'spatial_config': {
-                'road_length_m': float(traffic_config.get('road_length_m', 20.0)),
-                'road_width_m': float(traffic_config.get('road_width_m', 7.0)),
-                'lane_count': int(traffic_config.get('lane_count', 2)),
-                'homography_calibrated': True,
-            },
-            'system_profile': {
-                'hardware': 'NVIDIA Jetson Nano',
-                'app_version': '1.0.0',
-                'model_version': os.getenv('MODEL_VERSION', 'exp.engine'),
-                'supported_classes': list(vehicle_classes),
-            },
-            'supported_commands': [
-                'get_health',
-                'request_status',
-                'reload_config',
-                'restart_analytics',
-                'capture_test_snapshot',
-                'start_live',
-                'stop_live',
-                'live_keepalive',
-                'live_status',
-            ],
-        }
-        mqtt_publisher.set_registration_profile(profile_data)
 
         # Gói 2: Chuẩn đoán sức khỏe theo yêu cầu WebGIS
         def _handle_get_health(payload):
@@ -617,34 +624,41 @@ def main():
             'model_version': os.getenv('MODEL_VERSION', 'exp.engine'),
         })
 
-        # Gói điều khiển: Hot-Reload ROI và Homography Calibration trực tiếp trong bộ nhớ (Mục 6)
+        # Gói điều khiển: Hot-Reload ROI và Homography Calibration trực tiếp trong bộ nhớ (Fix R3)
         def _handle_reload_config(payload):
             print('[HOT-RELOAD] Received reload_config command via MQTT...')
             params = payload.get('params', {}) if isinstance(payload, dict) else {}
-            cfg_path = params.get('config_path') or args.roi_config
+            # Ưu tiên cấu hình remote nếu không chỉ định đường dẫn cụ thể
+            remote_cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'configs', 'roi_config.remote.json')
+            if not params.get('config_path') and os.path.isfile(remote_cfg):
+                cfg_path = remote_cfg
+            else:
+                cfg_path = params.get('config_path') or args.roi_config
             new_cfg = load_traffic_config(cfg_path)
             
-            # Cập nhật đa giác ROI
-            geometry['analysis'] = normalized_to_pixels(new_cfg['analysis_roi'])
-            geometry['detection'] = normalized_to_pixels(new_cfg['detection_roi'])
-            presence_counter.update_geometry(geometry['analysis'])
-            
-            # Cập nhật ma trận phối cảnh
-            calib_pts = normalized_to_pixels(new_cfg['calibration_image_points'])
-            new_calib = PerspectiveCalibration(
-                calib_pts,
-                new_cfg['road_width_m'],
-                new_cfg['road_length_m']
-            )
-            speed_estimator.update_calibration(new_calib)
-            
-            # Cập nhật thông số mặt đường chuẩn xác qua update_geometry
-            analyzer.update_geometry(new_cfg['road_length_m'], new_cfg['lane_count'])
-            if hasattr(state_model, 'context') and 'traffic_context' in new_cfg:
-                ctx_val = str(new_cfg['traffic_context']).lower().strip()
-                if ctx_val in ('signalized', 'midblock'):
-                    state_model.context = ctx_val
-                    print('[HOT-RELOAD] Updated traffic context to: %s' % ctx_val)
+            with geometry_lock:
+                # Cập nhật đa giác ROI an toàn dưới Lock
+                geometry['analysis'] = normalized_to_pixels(new_cfg['analysis_roi'])
+                geometry['detection'] = normalized_to_pixels(new_cfg['detection_roi'])
+                presence_counter.update_geometry(geometry['analysis'])
+                
+                # Cập nhật ma trận phối cảnh và XÓA sạch lịch sử track cũ để không trộn ma trận cũ với mới
+                calib_pts = normalized_to_pixels(new_cfg['calibration_image_points'])
+                new_calib = PerspectiveCalibration(
+                    calib_pts,
+                    new_cfg['road_width_m'],
+                    new_cfg['road_length_m']
+                )
+                speed_estimator.update_calibration(new_calib)
+                presence_counter.reset()
+                
+                # Cập nhật thông số mặt đường chuẩn xác qua update_geometry
+                analyzer.update_geometry(new_cfg['road_length_m'], new_cfg['lane_count'])
+                if hasattr(state_model, 'context') and 'traffic_context' in new_cfg:
+                    ctx_val = str(new_cfg['traffic_context']).lower().strip()
+                    if ctx_val in ('signalized', 'midblock'):
+                        state_model.context = ctx_val
+                        print('[HOT-RELOAD] Updated traffic context to: %s' % ctx_val)
 
             print('[HOT-RELOAD] Successfully reloaded ROI and Calibration in memory without restarting!')
             return {
@@ -706,8 +720,6 @@ def main():
 
         mqtt_publisher._command_callback = route_command
         mqtt_publisher.start()
-        heartbeat_thread = HeartbeatThread(mqtt_publisher)
-        heartbeat_thread.start()
 
     try:
         import gi
@@ -743,6 +755,7 @@ def main():
     diag_track_meta = {}
     last_timing = [None]
     track_prev_area = {}
+    last_area_prune = [started_wall]
     if debug_diagnostics:
         print('[DIAGNOSTICS] Diagnostic logging ENABLED (will log track table when congestion_score > 40)')
 
@@ -766,6 +779,10 @@ def main():
         while frame_list:
             frame_meta = pyds.NvDsFrameMeta.cast(frame_list.data)
 
+            with geometry_lock:
+                det_roi = geometry['detection']
+                ana_roi = geometry['analysis']
+
             detection_objects = []
             analysis_objects = []
             metadata = []
@@ -783,8 +800,8 @@ def main():
                         float(rect.top + rect.height)]
                 point = bbox_bottom_center(bbox)
                 is_vehicle = class_name in vehicle_classes
-                in_detection = point_in_polygon(point, geometry['detection'])
-                in_analysis = point_in_polygon(point, geometry['analysis'])
+                in_detection = point_in_polygon(point, det_roi)
+                in_analysis = point_in_polygon(point, ana_roi)
                 track_id = int(obj_meta.object_id)
                 valid_track = track_id < (1 << 63)
                 item = {
@@ -862,14 +879,26 @@ def main():
                     continue
                 curr_area = odiag.get('area')
                 if curr_area is not None:
-                    prev_a = track_prev_area.get(tid)
-                    if prev_a is not None and prev_a > 0:
-                        area_change = abs(curr_area - prev_a) / prev_a
-                        if area_change > args.max_bbox_area_change:
-                            track_prev_area[tid] = curr_area
-                            continue
-                    track_prev_area[tid] = curr_area
+                    prev_entry = track_prev_area.get(tid)
+                    if prev_entry is not None:
+                        prev_a = prev_entry[0] if isinstance(prev_entry, tuple) else prev_entry
+                        if prev_a > 0:
+                            area_change = abs(curr_area - prev_a) / prev_a
+                            if area_change > args.max_bbox_area_change:
+                                track_prev_area[tid] = (curr_area, event_time)
+                                continue
+                    track_prev_area[tid] = (curr_area, event_time)
                 speed_objects.append(obj)
+
+            # Dọn dẹp rò rỉ bộ nhớ cho track_prev_area định kỳ mỗi 5s (Fix A5)
+            if event_time - last_area_prune[0] > 5.0:
+                stale_area_keys = [
+                    k for k, v in list(track_prev_area.items())
+                    if event_time - (v[1] if isinstance(v, tuple) else event_time) > 10.0
+                ]
+                for k in stale_area_keys:
+                    track_prev_area.pop(k, None)
+                last_area_prune[0] = event_time
 
             speeds = speed_estimator.update(speed_objects, event_time)
             presence = presence_counter.snapshot()
@@ -887,6 +916,35 @@ def main():
             snapshot_context_by_source[int(frame_meta.source_id)] = dict(metrics)
             if snapshot_service is not None:
                 snapshot_service.update_telemetry(metrics)
+
+            # Fix V3: Lắng nghe trigger chụp ảnh từ Agent khi pipeline đang chạy (không mở lại camera CSI)
+            if os.path.exists(SNAPSHOT_TRIGGER_FILE):
+                try:
+                    with open(SNAPSHOT_TRIGGER_FILE, 'r') as _tf:
+                        _trig = json.load(_tf)
+                    if os.path.exists(SNAPSHOT_TRIGGER_FILE):
+                        os.remove(SNAPSHOT_TRIGGER_FILE)
+                    _cid = _trig.get('command_id')
+                    if snapshot_service is not None and _cid:
+                        snapshot_service.request_manual_snapshot(_cid)
+                except Exception as _terr:
+                    print('[PIPELINE] Snapshot trigger error: %s' % _terr)
+
+            # Fix V3 & V7: Lắng nghe trigger chụp ảnh preview từ Agent (không block pad probe)
+            if os.path.exists(PREVIEW_TRIGGER_FILE):
+                try:
+                    if os.path.exists(PREVIEW_TRIGGER_FILE):
+                        os.remove(PREVIEW_TRIGGER_FILE)
+                    if 'pyds' in sys.modules and not preview_frame_queue.full():
+                        import pyds
+                        surf = pyds.get_nvds_buf_surface(hash(buffer), int(frame_meta.batch_id))
+                        # Fix V7: Copy nhanh mảng NumPy trên RAM (< 1ms), đẩy sang worker thread nền nén JPEG và ghi file!
+                        surf_copy = surf.copy()
+                        preview_frame_queue.put_nowait((surf_copy, LATEST_PREVIEW_FILE))
+                        if hasattr(pyds, 'unmap_nvds_buf_surface'):
+                            pyds.unmap_nvds_buf_surface(hash(buffer), int(frame_meta.batch_id))
+                except Exception as _perr:
+                    print('[PIPELINE] Preview trigger error: %s' % _perr)
 
             for obj_meta, track_id, class_name, should_display in metadata:
                 rect = obj_meta.rect_params
@@ -1032,49 +1090,29 @@ def main():
             source_id=0
         )
 
-    # On-Demand Live Streaming (kích hoạt khi LIVE_STREAM_ENABLED=1)
-    live_stream_sender = None
-    live_appsink = pipeline.get_by_name('live_appsink')
-    if live_appsink is not None:
-        try:
-            from communication.live_stream_sender import LiveStreamSender
-            from config.settings import BACKEND_URL, EDGE_ID, EDGE_TOKEN, LIVE_WIDTH, LIVE_HEIGHT, LIVE_FPS
-            live_stream_sender = LiveStreamSender(
-                backend_url=BACKEND_URL,
-                edge_id=EDGE_ID,
-                edge_token=EDGE_TOKEN,
-                width=LIVE_WIDTH,
-                height=LIVE_HEIGHT,
-                fps=LIVE_FPS
-            )
-            live_stream_sender.start()
-
-            def on_live_sample(sink):
-                sample = sink.emit('pull-sample')
-                if not sample:
-                    return Gst.FlowReturn.OK
-                if not live_stream_sender.is_streaming:
-                    return Gst.FlowReturn.OK
-                buf = sample.get_buffer()
-                if not buf:
-                    return Gst.FlowReturn.OK
-                success, map_info = buf.map(Gst.MapFlags.READ)
-                if success:
-                    try:
-                        live_stream_sender.send_frame(bytes(map_info.data))
-                    finally:
-                        buf.unmap(map_info)
-                return Gst.FlowReturn.OK
-
-            live_appsink.connect('new-sample', on_live_sample)
-            print('[PIPELINE] Live Stream appsink successfully hooked to LiveStreamSender')
-        except Exception as err:
-            print('[PIPELINE] Failed to initialize LiveStreamSender: %s' % err)
-
     def on_bus_message(_bus, message):
         if message.type == Gst.MessageType.ERROR:
             error, _debug = message.parse_error()
-            print('[PIPELINE ERROR] %s' % error, file=sys.stderr)
+            src_elem = getattr(message, 'src', None)
+            src_name = src_elem.get_name() if (src_elem and hasattr(src_elem, 'get_name')) else ''
+
+            # Fix V2: Phân loại lỗi element. Nếu là lỗi nhánh Live Stream (rtspclientsink, encoder, MediaMTX rớt mạng)
+            live_elements = {'queue_live', 'live_valve', 'conv_live', 'caps_live', 'enc_live', 'parse_live', 'sink_live'}
+            is_live_error = (src_name in live_elements) or ('live' in src_name.lower()) or ('rtsp' in src_name.lower())
+
+            if is_live_error:
+                print('[PIPELINE WARNING] Live stream branch error from "%s": %s (AI pipeline kept intact)' % (src_name, error), file=sys.stderr)
+                try:
+                    from core.live_stream import get_global_controller
+                    ctrl = getattr(pipeline, 'live_controller', None) or get_global_controller()
+                    if ctrl:
+                        ctrl.on_bus_error(error)
+                except Exception as ctrl_err:
+                    print('[PIPELINE WARNING] Error calling live_controller.on_bus_error: %s' % ctrl_err, file=sys.stderr)
+                # Tuyệt đối KHÔNG gọi request_stop()! AI DeepStream và telemetry tiếp tục chạy bình thường!
+                return
+
+            print('[PIPELINE CRITICAL ERROR] Element "%s": %s' % (src_name, error), file=sys.stderr)
             request_stop()
         elif message.type == Gst.MessageType.EOS:
             print('[PIPELINE] End of stream')
@@ -1100,11 +1138,15 @@ def main():
             snapshot_pad.remove_probe(snapshot_probe_id)
         if snapshot_service is not None:
             snapshot_service.stop(timeout=20)
-        if live_stream_sender is not None:
-            live_stream_sender.stop()
 
-        if heartbeat_thread:
-            heartbeat_thread.stop()
+        preview_worker_stop.set()
+        try:
+            preview_frame_queue.put_nowait(None)
+        except Exception:
+            pass
+        if preview_thread is not None and preview_thread.is_alive():
+            preview_thread.join(timeout=1.0)
+
         if mqtt_publisher:
             mqtt_publisher.stop()
 

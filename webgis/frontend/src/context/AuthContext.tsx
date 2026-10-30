@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import type { User } from "../types/auth";
 import { authApi } from "../services/authApi";
+import { wsService } from "../services/websocket";
 
 interface AuthContextType {
   user: User | null;
@@ -60,6 +61,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(data.user);
     localStorage.setItem("webgis_auth_token", data.token);
     localStorage.setItem("webgis_auth_user", JSON.stringify(data.user));
+    wsService.authenticate(data.token);
   };
 
   const register = async (userData: { name: string; email: string; password: string }) => {
@@ -68,6 +70,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(data.user);
     localStorage.setItem("webgis_auth_token", data.token);
     localStorage.setItem("webgis_auth_user", JSON.stringify(data.user));
+    wsService.authenticate(data.token);
   };
 
   const logout = () => {
@@ -75,6 +78,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem("webgis_auth_user");
     setUser(null);
     setToken(null);
+    wsService.deauthenticate();
   };
 
   const updateProfile = async (data: { name?: string; email?: string; currentPassword?: string; newPassword?: string }) => {

@@ -24,10 +24,12 @@ webrtc: yes
 webrtcAddress: :8889
 webrtcEncryption: false
 webrtcAllowOrigins: ["*"]
-# Địa chỉ IP của máy chủ MediaMTX trong mạng LAN để WebRTC ICE bắt tay thành công
-# Có thể override bằng biến môi trường: MTX_WEBRTCADDITIONALHOSTS
-webrtcAdditionalHosts: [192.168.88.193, 127.0.0.1]
+# Địa chỉ IP/Domain của máy chủ MediaMTX (cho phép override qua MTX_WEBRTCADDITIONALHOSTS)
+webrtcAdditionalHosts: [127.0.0.1]
 webrtcLocalUDPAddress: :8189
+# Máy chủ STUN công cộng để WebRTC tự động đục lỗ qua Router NAT khi truy cập từ ngoài Internet
+webrtcICEServers2:
+  - url: stun:stun.l.google.com:19302
 
 # HLS Server (Low-Latency HLS cho trình duyệt fallback qua hls.js)
 hls: yes
@@ -48,7 +50,8 @@ paths:
   ~^live/(?P<edge_id>.+)$:
     source: publisher
     maxReaders: 20
-    overridePublisher: yes
+    # Tắt overridePublisher để không cho phép bên thứ ba chiếm đoạt hoặc đè luồng RTSP đang phát (Fix S5)
+    overridePublisher: no
 
   # Đường dẫn mặc định dự phòng
   all_others:

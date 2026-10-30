@@ -71,3 +71,76 @@ def test_datastore_thread_safety():
     assert seg is not None
     assert seg["traffic_status"] in ("FREE", "SLOW", "CONGESTED")
     assert seg["traffic_color"] in ("#10B981", "#F59E0B", "#EF4444")
+
+
+def test_mark_node_telemetry_stale():
+    store = DataStore()
+    edge_id = "test-node-stale"
+    seg_id = "test-seg-stale"
+
+    store.upsert_segment({
+        "segment_id": seg_id,
+        "name": "Stale Test Segment",
+        "road_length_m": 200.0,
+        "lane_count": 2,
+    })
+    store.upsert_node({
+        "edge_id": edge_id,
+        "segment_id": seg_id,
+        "name": "Stale Test Node",
+        "latitude": 21.0,
+        "longitude": 105.8,
+    })
+
+    # 1. Update telemetry with congested state
+    store.update_telemetry(edge_id, {
+        "segment_id": seg_id,
+        "current_vehicle_count": 35,
+        "avg_speed_kmh": 8.5,
+        "congestion_score": 85,
+        "traffic_status": "CONGESTED",
+        "counts_by_class": {"motorbike": 25, "car": 10},
+    })
+
+    node = store.get_node(edge_id)
+    assert node["data_status"] == "live"
+    assert node["traffic_status"] == "CONGESTED"
+    assert node["congestion_score"] == 85
+    assert node["last_telemetry_at"] is not None
+
+    seg = store.get_segment(seg_id)
+    assert seg["traffic_status"] == "CONGESTED"
+    assert seg["traffic_color"] == "#EF4444"
+
+    # 2. Mark stale (e.g. pipeline stopped or telemetry timeout)
+    store.mark_node_telemetry_stale(edge_id)
+
+    node_stale = store.get_node(edge_id)
+    assert node_stale["data_status"] == "stale"
+    assert node_stale["traffic_status"] == "STALE"
+    assert node_stale["congestion_score"] == 0
+    assert node_stale["current_vehicle_count"] == 0
+
+    seg_stale = store.get_segment(seg_id)
+    assert seg_stale["traffic_status"] == "STALE"
+    assert seg_stale["congestion_score"] == 0
+    assert seg_stale["traffic_color"] == "#9CA3AF"
+
+    # 3. Test update_pipeline_status(running=False) marks stale
+    # Re-feed telemetry
+    store.update_telemetry(edge_id, {
+        "segment_id": seg_id,
+        "current_vehicle_count": 10,
+        "congestion_score": 30,
+        "traffic_status": "FREE",
+    })
+    assert store.get_node(edge_id)["data_status"] == "live"
+
+    # Stop pipeline
+    store.update_pipeline_status(edge_id, running=False)
+    node_stopped = store.get_node(edge_id)
+    assert node_stopped["pipeline_running"] is False
+    assert node_stopped["data_status"] in ("stale", "idle")
+    assert node_stopped["traffic_status"] == "STALE"
+    assert node_stopped["congestion_score"] == 0
+

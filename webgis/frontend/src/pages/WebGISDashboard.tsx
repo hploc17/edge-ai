@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { WebGISMap } from "../components/Map/WebGISMap";
 import { Navbar } from "../components/Navbar";
 import { LayerControl } from "../components/Map/LayerControl";
@@ -60,6 +60,9 @@ export const WebGISDashboard: React.FC = () => {
   const [isPickingLocation, setIsPickingLocation] = useState(false);
   const [pickedCoords, setPickedCoords] = useState<{ lng: number; lat: number } | null>(null);
 
+  // Map lưu trữ ánh xạ edge_id -> segment_id không làm đơ re-render (Fix F1)
+  const edgeSegmentMapRef = useRef<Record<string, string>>({});
+
   // Initial Data Load (Persistent State - Mục 5)
   const fetchAllData = useCallback(async () => {
     try {
@@ -92,6 +95,13 @@ export const WebGISDashboard: React.FC = () => {
         return n;
       });
 
+      // Lưu ánh xạ edge_id -> segment_id chính xác (Fix F1)
+      mergedNodes.forEach((n) => {
+        if (n.edge_id && n.segment_id) {
+          edgeSegmentMapRef.current[n.edge_id] = n.segment_id;
+        }
+      });
+
       setNodesGeoJSON(nodesGeo);
       setSegmentsGeoJSON(segmentsGeo);
       setNodesList(mergedNodes);
@@ -122,6 +132,12 @@ export const WebGISDashboard: React.FC = () => {
   useEffect(() => {
     wsService.connect();
 
+    // Tự động đồng bộ lại toàn bộ dữ liệu GIS khi WebSocket kết nối lại sau sự cố mất mạng (Fix D4)
+    const unbindReconnect = wsService.onReconnect(() => {
+      console.log("[WebGIS] WebSocket reconnected, re-syncing full network data...");
+      fetchAllData();
+    });
+
     const unsubscribe = wsService.subscribe((msg) => {
       if (msg.type === "telemetry") {
         const t = msg.data;
@@ -151,22 +167,20 @@ export const WebGISDashboard: React.FC = () => {
           };
         });
 
+        // Xác định chính xác segment_id của node gửi telemetry, loại bỏ hoàn toàn ID gán cứng (Fix F1)
+        const targetSegmentId = msg.data?.segment_id || edgeSegmentMapRef.current[msg.edge_id];
+        if (targetSegmentId) {
+          edgeSegmentMapRef.current[msg.edge_id] = targetSegmentId;
+        }
+
         setSegmentsGeoJSON((prev) => {
-          if (!prev) return prev;
+          if (!prev || !targetSegmentId) return prev;
           const score = t.congestion_score ?? 0;
           const color = score >= 65 ? "#EF4444" : score >= 35 ? "#F59E0B" : "#10B981";
           return {
             ...prev,
             features: prev.features.map((f) => {
-              const segId = f.properties.segment_id;
-              const matches = 
-                segId === "seg-edge-01" ||
-                segId === "segment-001" ||
-                segId === `seg-${msg.edge_id}` ||
-                segId === msg.data?.segment_id ||
-                msg.edge_id === "edge-01";
-
-              if (matches) {
+              if (f.properties.segment_id === targetSegmentId) {
                 return {
                   ...f,
                   properties: {
@@ -268,6 +282,9 @@ export const WebGISDashboard: React.FC = () => {
       } else if (msg.type === "node_registered" || msg.type === "NODE_ADDED") {
         const rawNode = msg.node || {};
         const edgeId = msg.edge_id || rawNode.edge_id;
+        if (edgeId && rawNode.segment_id) {
+          edgeSegmentMapRef.current[edgeId] = rawNode.segment_id;
+        }
         const lat = Number(rawNode.latitude ?? rawNode.geo?.lat ?? 20.998412);
         const lng = Number(rawNode.longitude ?? rawNode.geo?.lng ?? 105.795123);
         const nodeName = rawNode.name || rawNode.device_name || `Camera AI (${edgeId})`;
@@ -393,10 +410,155 @@ export const WebGISDashboard: React.FC = () => {
             )
           };
         });
+      } else if (msg.type === "segment_update" || msg.type === "segment_updated") {
+        // Cập nhật hoặc tạo mới LineString segment ngay khi backend phát (Fix F2)
+        const segData = (msg as any).segment || (msg as any).data;
+        const segId = (msg as any).segment_id || segData?.segment_id;
+        if (segId) {
+          setSegmentsGeoJSON((prev) => {
+            if (!prev) return prev;
+            const exists = prev.features.some((f) => f.properties.segment_id === segId);
+            if (exists) {
+              return {
+                ...prev,
+                features: prev.features.map((f) => {
+                  if (f.properties.segment_id === segId) {
+                    return {
+                      ...f,
+                      properties: {
+                        ...f.properties,
+                        ...segData,
+                        traffic_color: segData?.traffic_color || f.properties.traffic_color,
+                        congestion_score: segData?.congestion_score ?? f.properties.congestion_score,
+                        traffic_status: segData?.traffic_status || f.properties.traffic_status,
+                      }
+                    };
+                  }
+                  return f;
+                })
+              };
+            }
+            const coords = segData?.osm_coordinates || segData?.coordinates;
+            if (coords && Array.isArray(coords) && coords.length >= 2) {
+              const newFeature = {
+                type: "Feature" as const,
+                geometry: {
+                  type: "LineString" as const,
+                  coordinates: coords
+                },
+                properties: {
+                  segment_id: segId,
+                  road_name: segData?.name || segData?.road_name || `Đoạn ${segId}`,
+                  lane_count: segData?.lane_count || 2,
+                  road_length_m: segData?.road_length_m || 100.0,
+                  road_width_m: segData?.road_width_m || 7.0,
+                  speed_limit_kmh: segData?.speed_limit_kmh || 60.0,
+                  traffic_status: segData?.traffic_status || "FREE",
+                  congestion_score: segData?.congestion_score || 0,
+                  traffic_color: segData?.traffic_color || "#10B981",
+                  avg_speed_kmh: segData?.avg_speed_kmh || 0,
+                  vehicle_count: segData?.vehicle_count || 0,
+                  ...segData
+                }
+              };
+              return {
+                ...prev,
+                features: [...prev.features, newFeature]
+              };
+            }
+            return prev;
+          });
+        }
+      } else if (msg.type === "node_mismatch_warning") {
+        // Cập nhật cảnh báo sai lệch mã định danh thiết bị tức thời lên UI (Fix F2)
+        const edgeId = (msg as any).edge_id;
+        setNodesGeoJSON((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            features: prev.features.map((f) =>
+              f.properties.edge_id === edgeId
+                ? {
+                    ...f,
+                    properties: {
+                      ...f.properties,
+                      id_mismatch: true,
+                      actual_hardware_id: (msg as any).actual_hardware_id,
+                      mismatch_message: (msg as any).message
+                    }
+                  }
+                : f
+            )
+          };
+        });
+        setNodesList((prev) =>
+          prev.map((n) =>
+            n.edge_id === edgeId
+              ? {
+                  ...n,
+                  id_mismatch: true,
+                  actual_hardware_id: (msg as any).actual_hardware_id,
+                  mismatch_message: (msg as any).message
+                }
+              : n
+          )
+        );
+        setSelectedNodeDetail((prev) => {
+          if (!prev || prev.edge_id !== edgeId) return prev;
+          return {
+            ...prev,
+            id_mismatch: true,
+            actual_hardware_id: (msg as any).actual_hardware_id,
+            mismatch_message: (msg as any).message
+          };
+        });
+      } else if (msg.type === "spatial_drift_warning") {
+        // Cập nhật cảnh báo dịch chuyển phần cứng GPS tức thời lên UI (Fix F2)
+        const edgeId = (msg as any).edge_id;
+        const driftData = {
+          drift_m: (msg as any).drift_m,
+          reported_coords: (msg as any).reported_coords,
+          saved_coords: (msg as any).saved_coords
+        };
+        setNodesGeoJSON((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            features: prev.features.map((f) =>
+              f.properties.edge_id === edgeId
+                ? {
+                    ...f,
+                    properties: {
+                      ...f.properties,
+                      spatial_drift: driftData
+                    }
+                  }
+                : f
+            )
+          };
+        });
+        setNodesList((prev) =>
+          prev.map((n) =>
+            n.edge_id === edgeId
+              ? {
+                  ...n,
+                  spatial_drift: driftData
+                }
+              : n
+          )
+        );
+        setSelectedNodeDetail((prev) => {
+          if (!prev || prev.edge_id !== edgeId) return prev;
+          return {
+            ...prev,
+            spatial_drift: driftData
+          };
+        });
       }
     });
 
     return () => {
+      unbindReconnect();
       unsubscribe();
     };
   }, [isStaff]);

@@ -100,6 +100,64 @@ class PerspectiveCalibration(object):
             )
 
     @staticmethod
+    def validate_aspect_ratio_and_order(points, road_width_m, road_length_m):
+        """Kiểm tra tính đúng đắn của thứ tự 4 điểm P1-P4 và tỉ lệ mặt đường.
+
+        Thứ tự chuẩn:
+          P1: Gần - Trái (near-left)
+          P2: Gần - Phải (near-right)
+          P3: Xa - Phải (far-right)
+          P4: Xa - Trái (far-left)
+        """
+        pts = [[float(p[0]), float(p[1])] for p in points]
+        if len(pts) != 4:
+            raise ValueError('Perspective calibration requires 4 points')
+
+        # Nếu là normalized [0.0, 1.0], scale lên 1280x720 để kiểm tra khoảng cách pixel
+        is_norm = all(0.0 <= p[0] <= 1.0 and 0.0 <= p[1] <= 1.0 for p in pts)
+        pts_px = [[p[0] * 1280.0, p[1] * 720.0] for p in pts] if is_norm else pts
+        PerspectiveCalibration._validate_ordered_quadrilateral(pts_px)
+
+        # 1. Kiểm tra thứ tự Gần - Xa: Với góc nhìn camera từ trên cao xuống đường,
+        # cạnh đáy gần (P1-P2) phải nằm thấp hơn (y lớn hơn) so với cạnh đáy xa (P3-P4)
+        y_near = (pts[0][1] + pts[1][1]) / 2.0
+        y_far = (pts[2][1] + pts[3][1]) / 2.0
+        if y_near <= y_far:
+            raise ValueError(
+                'Calibration order error: P1, P2 (near points) must be located lower '
+                '(closer to bottom of image) than P3, P4 (far points). '
+                'Required order: P1(Near-Left) -> P2(Near-Right) -> P3(Far-Right) -> P4(Far-Left).'
+            )
+
+        # 2. Kiểm tra click dọc theo lề đường thay vì ngang mặt cắt:
+        # P1 và P2 phải thuộc cùng mặt cắt ngang gần. Nếu |y1 - y2| quá lớn và |x1 - x2| nhỏ
+        # trong khi |y2 - y3| nhỏ và |x2 - x3| lớn thì người dùng đã click dọc theo lề đường trước.
+        dy_12 = abs(pts[0][1] - pts[1][1])
+        dx_12 = abs(pts[0][0] - pts[1][0])
+        dy_23 = abs(pts[1][1] - pts[2][1])
+        dx_23 = abs(pts[1][0] - pts[2][0])
+
+        if float(road_length_m) >= float(road_width_m):
+            if dy_12 > 1.5 * dx_12 and dx_23 > 1.5 * dy_23:
+                raise ValueError(
+                    'Calibration side error: Edge P1-P2 is longitudinal (road curb) instead of '
+                    'transversal (road cross-section). Please click across the road first (P1->P2), '
+                    'then along the right curb (P2->P3), across the far end (P3->P4), and left curb (P4->P1).'
+                )
+
+        # 3. Hiệu ứng phối cảnh (Foreshortening): Cạnh gần (P1-P2) phải rộng hơn hoặc xấp xỉ cạnh xa (P3-P4)
+        w_near = math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1])
+        w_far = math.hypot(pts[2][0] - pts[3][0], pts[2][1] - pts[3][1])
+        if w_near > 1e-4 and w_far > 1.35 * w_near:
+            raise ValueError(
+                'Calibration perspective error: Far road edge (P4-P3, len=%.3f) appears substantially '
+                'wider than Near road edge (P1-P2, len=%.3f). Quadrilateral order appears inverted.'
+                % (w_far, w_near)
+            )
+
+        return True
+
+    @staticmethod
     def _solve_homography(source_points, destination_points):
         rows = []
         values = []

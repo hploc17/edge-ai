@@ -182,7 +182,7 @@ def grab_one_frame(source_type: str, source: str = None,
 
         # Cách 3: DÙNG CHUNG LUỒNG - Nếu Camera CSI đang bận (do main.py hoặc Live Stream đang chạy),
         # tự động lấy 1 frame từ MediaMTX RTSP mà không đụng chạm phần cứng CSI!
-        mediamtx_host = os.getenv("MEDIAMTX_HOST", "192.168.88.193")
+        mediamtx_host = os.getenv("MEDIAMTX_HOST", "localhost")
         mediamtx_port = os.getenv("MEDIAMTX_RTSP_PORT", "8554")
         edge_id = os.getenv("EDGE_ID", "edge-01")
         rtsp_url = os.getenv("LIVE_RTSP_URL", "rtsp://{}:{}/live/{}".format(mediamtx_host, mediamtx_port, edge_id))

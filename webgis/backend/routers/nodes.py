@@ -23,7 +23,8 @@ from pydantic import BaseModel, model_validator
 
 from services.data_store import store
 from services.websocket_manager import ws_manager
-from services.auth_middleware import require_staff
+from services.auth_middleware import require_staff, get_optional_staff
+from services.mqtt_service import mqtt_service
 
 router = APIRouter(prefix="/api/v1/nodes", tags=["Node Fleet Management"])
 
@@ -103,12 +104,22 @@ class NodeApproveRequest(BaseModel):
         return self
 
 
+def _mask_node_for_public(node_dict: Dict[str, Any], is_staff: bool) -> Dict[str, Any]:
+    """Ẩn địa chỉ MAC và Hardware ID đối với người xem công khai (Fix S3)."""
+    if is_staff or not node_dict:
+        return node_dict
+    copied = dict(node_dict)
+    copied.pop("mac_address", None)
+    copied.pop("actual_hardware_id", None)
+    return copied
+
+
 # ─── Approved Nodes Endpoints ─────────────────────────────────────────────────
 
 @router.get("", response_model=List[Dict[str, Any]])
-def list_all_nodes():
-    """Trả về danh sách các node đã được Admin phê duyệt."""
-    return store.get_all_nodes()
+def list_all_nodes(is_staff: bool = Depends(get_optional_staff)):
+    """Trả về danh sách các node đã được Admin phê duyệt (ẩn MAC với khách vãng lai - Fix S3)."""
+    return [_mask_node_for_public(n, is_staff) for n in store.get_all_nodes()]
 
 
 @router.get("/pending", response_model=List[Dict[str, Any]], dependencies=[Depends(require_staff)])
@@ -124,11 +135,12 @@ def get_next_auto_identifiers():
 
 
 @router.get("/{edge_id}", response_model=Dict[str, Any])
-def get_node_detail(edge_id: str):
+def get_node_detail(edge_id: str, is_staff: bool = Depends(get_optional_staff)):
+    """Lấy thông tin chi tiết node (ẩn MAC với khách vãng lai - Fix S3)."""
     node = store.get_node(edge_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Node '{edge_id}' not found or not yet approved.")
-    return node
+    return _mask_node_for_public(node, is_staff)
 
 
 # ─── Approve / Reject Pending Nodes (Mục 2) ───────────────────────────────────
@@ -159,6 +171,15 @@ async def approve_pending_node(edge_id: str, data: NodeApproveRequest):
         approved_data["segment_id"] = f"seg-{edge_id}"
 
     node = store.approve_node(edge_id, approved_data)
+
+    # Tự động đồng bộ và cấp phát Edge ID xuống thiết bị Jetson qua topic provisioning (Zero-Touch)
+    mac_addr = node.get("mac_address")
+    if mac_addr:
+        mqtt_service.publish_provisioning_approval(
+            mac_address=mac_addr,
+            assigned_edge_id=edge_id,
+            approved_data=node
+        )
 
     # Broadcast cả 2 dạng sự kiện để tương thích mọi phiên bản client
     await ws_manager.broadcast({

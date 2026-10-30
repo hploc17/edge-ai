@@ -8,7 +8,6 @@ from typing import List, Optional, Dict
 import jwt
 from fastapi import Request, HTTPException, Security, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from config import BACKEND_DIR
 import os
 
 # Cấu hình JWT Secret đồng bộ với Express
@@ -81,6 +80,17 @@ def authorize_roles(allowed_roles: List[str]):
 # Fast dependencies tiện lợi
 require_staff = authorize_roles(STAFF)
 require_admin = authorize_roles(ADMIN_ONLY)
+
+
+def get_optional_staff(credentials: Optional[HTTPAuthorizationCredentials] = Security(security_bearer)) -> bool:
+    """Trả về True nếu request mang token hợp lệ của Staff (ADMIN, MANAGER), ngược lại False (Fix S3)."""
+    if not credentials:
+        return False
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload.get("role") in STAFF
+    except Exception:
+        return False
 
 
 # ── In-Memory Rate Limiter cho Snapshot Công Khai (1 req / 10s / IP) ─────────

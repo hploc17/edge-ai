@@ -23,26 +23,34 @@ import time
 class LiveStreamController(object):
     """Quản lý trạng thái và vòng đời của nhánh Live Stream On-Demand."""
 
-    def __init__(self, valve=None, encoder=None, idle_timeout_s=60, rtsp_url=""):
+    def __init__(self, valve=None, encoder=None, idle_timeout_s=60, rtsp_url="", continuous_mode=False, sink=None):
         self.valve = valve
         self.encoder = encoder
-        self.idle_timeout_s = float(idle_timeout_s)
+        self.sink = sink
         self.rtsp_url = str(rtsp_url)
         self.error_message = None
         self.last_keepalive_time = time.time()
+
+        # Fix V1: Chế độ Continuous 24/7 PHẢI được bật tường minh (continuous_mode=True hoặc LIVE_CONTINUOUS_MODE=true).
+        # Mặc định hệ thống luôn là On-Demand: van đóng ban đầu (drop=True), trạng thái 'off', không tốn 16GB/ngày.
+        env_continuous = os.getenv("LIVE_CONTINUOUS_MODE", "0").lower() in ("1", "true", "yes")
+        self.continuous_mode = bool(continuous_mode) or env_continuous
+
+        parsed_timeout = float(idle_timeout_s) if idle_timeout_s is not None else 60.0
+        if not self.continuous_mode and parsed_timeout <= 0:
+            parsed_timeout = 60.0  # An toàn: ép về 60s On-Demand nếu không bật continuous_mode tường minh
+        self.idle_timeout_s = parsed_timeout
 
         self._lock = threading.Lock()
         self._timer_thread = None
         self._stop_timer = False
 
-        # On-Demand mode: Nếu idle_timeout_s > 0 thì mặc định ban đầu là 'off' và đóng valve (drop=True).
-        # Continuous mode: Nếu idle_timeout_s <= 0 thì phát liên tục 24/7 ('on', drop=False).
-        if self.idle_timeout_s > 0:
-            self.state = "off"
-            initial_drop = True
-        else:
+        if self.continuous_mode and self.idle_timeout_s <= 0:
             self.state = "on"
             initial_drop = False
+        else:
+            self.state = "off"
+            initial_drop = True
 
         if self.valve is not None:
             try:
@@ -50,7 +58,7 @@ class LiveStreamController(object):
             except Exception as e:
                 print("[LIVE CONTROLLER] Warning setting initial valve drop: %s" % e)
 
-        # Bật thread giám sát timeout nếu có cấu hình timeout > 0
+        # Bật thread giám sát timeout nếu ở chế độ on-demand
         if self.idle_timeout_s > 0:
             self._start_timer_thread()
 
@@ -135,6 +143,20 @@ class LiveStreamController(object):
             self.state = "starting"
             self.error_message = None
 
+            # Phục hồi trạng thái sink nếu trước đó bị lỗi ngắt về NULL (Fix V2)
+            if self.sink is not None and hasattr(self.sink, "set_state"):
+                try:
+                    import gi
+                    gi.require_version("Gst", "1.0")
+                    from gi.repository import Gst
+                    playing_state = Gst.State.PLAYING
+                except Exception:
+                    playing_state = "PLAYING"
+                try:
+                    self.sink.set_state(playing_state)
+                except Exception as _sink_err:
+                    print("[LIVE CONTROLLER] Notice re-arming sink to PLAYING: %s" % _sink_err)
+
             if self.valve is not None:
                 try:
                     self.valve.set_property("drop", False)
@@ -160,12 +182,11 @@ class LiveStreamController(object):
             }
 
     def stop(self, reason="requested"):
-        """Dừng luồng phát Live Stream."""
+        """Dừng luồng phát Live Stream (Fix V1: Cho phép dừng chủ động, đóng valve drop=True)."""
         with self._lock:
-            # Nếu đang ở chế độ phát liên tục song song cùng AI (idle_timeout_s <= 0),
-            # giữ nguyên luồng phát để hover trên WebGIS mở tức thì 0ms, trừ khi có lệnh buộc dừng (force/pipeline_stop)
-            if self.idle_timeout_s <= 0 and reason not in ("force", "pipeline_stop"):
-                print("[LIVE CONTROLLER] Continuous streaming enabled (idle_timeout_s=0). Ignoring stop request.")
+            # Nếu đang ở chế độ continuous_mode VÀ lý do dừng chỉ là idle timeout (không phải lệnh dừng chủ động)
+            if self.continuous_mode and self.idle_timeout_s <= 0 and reason not in ("force", "pipeline_stop", "stop_live", "user_stop", "requested"):
+                print("[LIVE CONTROLLER] Continuous streaming enabled. Ignoring idle timeout stop.")
                 return {"status": "continuous_running", "state": self.state, "reason": "continuous_mode"}
 
             if self.state == "off":
@@ -197,14 +218,40 @@ class LiveStreamController(object):
                 "error": self.error_message
             }
 
+    def update_rtsp_url(self, new_url):
+        """Cập nhật địa chỉ RTSP ingest động nhận từ Backend qua MQTT (Fix V6)."""
+        if not new_url:
+            return
+        with self._lock:
+            if self.rtsp_url != new_url:
+                print("[LIVE CONTROLLER] Updating RTSP Ingest URL dynamically to: %s" % new_url)
+                self.rtsp_url = new_url
+                if self.sink is not None and hasattr(self.sink, "set_property"):
+                    try:
+                        self.sink.set_property("location", new_url)
+                    except Exception as e:
+                        print("[LIVE CONTROLLER] Notice setting sink location: %s" % e)
+
     def on_bus_error(self, message):
-        """Xử lý sự kiện lỗi bus từ nhánh RTSP sink (không làm crash pipeline AI)."""
+        """Xử lý sự kiện lỗi bus từ nhánh RTSP sink (không làm crash pipeline AI - Fix V2)."""
         with self._lock:
             self.error_message = str(message)
             self.state = "error"
             if self.valve is not None:
                 try:
                     self.valve.set_property("drop", True)
+                except Exception:
+                    pass
+            if self.sink is not None and hasattr(self.sink, "set_state"):
+                try:
+                    import gi
+                    gi.require_version("Gst", "1.0")
+                    from gi.repository import Gst
+                    null_state = Gst.State.NULL
+                except Exception:
+                    null_state = "NULL"
+                try:
+                    self.sink.set_state(null_state)
                 except Exception:
                     pass
             print(
@@ -236,6 +283,11 @@ def register_live_handlers(cmd_handler):
         ctrl = get_global_controller()
         if not ctrl:
             return {'status': 'error', 'message': 'LiveStreamController not ready'}
+        if isinstance(payload, dict):
+            params = payload.get('params', {})
+            rtsp_url = params.get('rtsp_url') if isinstance(params, dict) else None
+            if rtsp_url:
+                ctrl.update_rtsp_url(rtsp_url)
         return ctrl.start()
 
     def _handle_stop(payload):

@@ -1,25 +1,47 @@
 @echo off
-chcp 65001 >nul
-title Khởi động WebGIS Production (Cổng đơn 8000)
+title WebGIS Production Mode (Port 8000)
 echo ==============================================================================
-echo   WEBGIS OPERATIONS CENTER (CHẾ ĐỘ STANDALONE / PRODUCTION - PORT 8000)
+echo   WEBGIS OPERATIONS CENTER (PRODUCTION MODE - PORT 8000)
 echo ==============================================================================
 echo.
-echo [1/3] Kiểm tra bản build Frontend...
+echo [1/4] Kiem tra ban build Frontend...
 if not exist "%~dp0webgis\frontend\dist\index.html" (
-    echo [INFO] Chưa tìm thấy bản build Frontend. Đang build từ mã nguồn...
+    echo [INFO] Chua tim thay ban build Frontend. Dang build tu ma nguon...
     pushd "%~dp0webgis\frontend"
     if not exist "node_modules\" call npm install
     call npm run build
     popd
 )
+echo [OK] Ban build Frontend da san sang tai webgis\frontend\dist.
 
-echo [2/3] Bản build Frontend đã sẵn sàng tại webgis\frontend\dist.
 echo.
-echo [3/3] Khởi động WebGIS Hub (FastAPI phục vụ cả Web UI và Backend API)...
-echo   - 🌐 Giao diện WebGIS:     http://localhost:8000/
-echo   - 📑 Tài liệu API Swagger:  http://localhost:8000/docs
-echo   - 📡 WebSocket Realtime:   ws://localhost:8000/ws
+echo [2/4] Kiem tra MediaMTX Streaming Server...
+netstat -ano | findstr :8554 >nul 2>&1
+if %errorlevel% equ 0 (
+    echo [OK] MediaMTX Streaming Server dang lang nghe tren cong 8554.
+) else (
+    docker info >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo [INFO] Dang kich hoat MediaMTX qua Docker...
+        docker compose -f "%~dp0deploy\mediamtx\docker-compose.yml" up -d >nul 2>&1
+    )
+)
+
+echo.
+echo [3/4] Khoi dong Auth Service (:5000)...
+if not exist "%~dp0webgis\auth-service\node_modules\" (
+    pushd "%~dp0webgis\auth-service"
+    call npm install
+    call npx prisma generate
+    popd
+)
+start "WebGIS Auth Service" cmd /k "cd /d %~dp0webgis\auth-service && npm run dev"
+
+echo.
+echo [4/4] Khoi dong WebGIS Hub (FastAPI phuc vu ca Web UI va Backend API)...
+echo   - Giao dien WebGIS:     http://localhost:8000/
+echo   - Tai lieu API Swagger: http://localhost:8000/docs
+echo   - WebSocket Realtime:   ws://localhost:8000/ws
 echo ==============================================================================
 echo.
 cd /d "%~dp0webgis\backend"

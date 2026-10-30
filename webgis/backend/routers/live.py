@@ -1,46 +1,64 @@
 """
 Live Streaming Router:
-1. Ingest Endpoint (Jetson -> Backend): WS /ws/ingest/{edge_id}
-2. Viewer Endpoint (Backend -> WebGIS Client): WS /ws/live/{edge_id}
-3. REST Endpoint: GET /api/v1/live/{edge_id}/status
+Quản lý luồng phát trực tiếp On-Demand camera CSI từ Jetson Nano qua MediaMTX (WebRTC / WHEP / HLS).
 """
 
 import asyncio
-import json
 import logging
 import os
-import time
 from typing import Optional
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Header, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
+from services.auth_middleware import require_staff
 
-from config import EDGE_TOKEN, LIVE_REQUIRE_AUTH
-from services.live_stream_manager import live_stream_manager
-from services.data_store import store
+try:
+    from services.data_store import store
+except ImportError:
+    try:
+        from webgis.backend.services.data_store import store
+    except ImportError:
+        store = None
 
 logger = logging.getLogger("LiveRouter")
 
 router = APIRouter(tags=["Live Video Streaming"])
 
-VALID_TOKENS = {
-    EDGE_TOKEN,
-    "dev-edge-token",
-    "my_secret_traffic_token_2026",
-    "CHANGE_ME_EDGE_TOKEN_RANDOM_STRING"
-}
-
-
-MEDIAMTX_HOST = os.getenv("MEDIAMTX_HOST", "192.168.88.193")
+MEDIAMTX_HOST = os.getenv("MEDIAMTX_HOST", "")
 MEDIAMTX_WEBRTC_PORT = int(os.getenv("MEDIAMTX_WEBRTC_PORT", "8889"))
 MEDIAMTX_HLS_PORT = int(os.getenv("MEDIAMTX_HLS_PORT", "8888"))
 MEDIAMTX_RTSP_PORT = int(os.getenv("MEDIAMTX_RTSP_PORT", "8554"))
 
 
-def _build_stream_urls(edge_id: str) -> dict:
-    host = os.getenv("MEDIAMTX_HOST", "192.168.88.193")
-    webrtc_base = os.getenv("MEDIAMTX_PUBLIC_WEBRTC_URL", f"http://{host}:{MEDIAMTX_WEBRTC_PORT}").rstrip("/")
-    hls_base = os.getenv("MEDIAMTX_PUBLIC_HLS_URL", f"http://{host}:{MEDIAMTX_HLS_PORT}").rstrip("/")
-    rtsp_base = os.getenv("MEDIAMTX_PUBLIC_RTSP_URL", f"rtsp://{host}:{MEDIAMTX_RTSP_PORT}").rstrip("/")
+def _build_stream_urls(edge_id: str, request: Optional[Request] = None) -> dict:
+    """Tự động suy ra URL phát trực tiếp (WebRTC / HLS / RTSP).
+    
+    Fix V6: Tự động nhận diện hostname của client thay vì gán chết IP LAN 192.168.88.193.
+    Hỗ trợ chuyển đổi HTTP/HTTPS chống chặn mixed content và hỗ trợ URL cloud/domain reverse proxy.
+    """
+    host_env = os.getenv("MEDIAMTX_HOST", "").strip()
+
+    client_host = None
+    client_scheme = "http"
+    if request:
+        client_host = request.url.hostname
+        # Nhận diện scheme HTTPS khi đứng sau Reverse Proxy (Nginx/Cloudflare)
+        proto_hdr = request.headers.get("x-forwarded-proto") or request.url.scheme
+        if proto_hdr:
+            client_scheme = proto_hdr.lower()
+
+    if host_env and host_env not in ("localhost", "127.0.0.1", ""):
+        chosen_host = host_env
+    elif client_host and client_host not in ("localhost", "127.0.0.1"):
+        chosen_host = client_host
+    else:
+        chosen_host = host_env or client_host or "localhost"
+
+    webrtc_base = os.getenv("MEDIAMTX_PUBLIC_WEBRTC_URL", f"{client_scheme}://{chosen_host}:{MEDIAMTX_WEBRTC_PORT}").rstrip("/")
+    hls_base = os.getenv("MEDIAMTX_PUBLIC_HLS_URL", f"{client_scheme}://{chosen_host}:{MEDIAMTX_HLS_PORT}").rstrip("/")
+
+    # Host mà Jetson Nano đẩy luồng RTSP về:
+    ingest_host = os.getenv("MEDIAMTX_INGEST_HOST", chosen_host)
+    rtsp_base = os.getenv("MEDIAMTX_PUBLIC_RTSP_URL", f"rtsp://{ingest_host}:{MEDIAMTX_RTSP_PORT}").rstrip("/")
 
     return {
         "webrtc_url": f"{webrtc_base}/live/{edge_id}/",
@@ -50,7 +68,7 @@ def _build_stream_urls(edge_id: str) -> dict:
     }
 
 
-async def _send_live_mqtt_command(edge_id: str, action: str, timeout_s: float = 8.0) -> dict:
+async def _send_live_mqtt_command(edge_id: str, action: str, params: Optional[dict] = None, timeout_s: float = 8.0) -> dict:
     from routers.remote_control import _pending_commands, _pending_lock, _new_command_id
     from services.mqtt_service import mqtt_service
 
@@ -66,7 +84,7 @@ async def _send_live_mqtt_command(edge_id: str, action: str, timeout_s: float = 
             "loop": loop
         }
 
-    sent = mqtt_service.publish_command(edge_id=edge_id, action=action, command_id=command_id)
+    sent = mqtt_service.publish_command(edge_id=edge_id, action=action, params=params or {}, command_id=command_id)
     if not sent:
         async with _pending_lock:
             _pending_commands.pop(command_id, None)
@@ -84,10 +102,10 @@ async def _send_live_mqtt_command(edge_id: str, action: str, timeout_s: float = 
         )
 
 
-@router.post("/api/v1/devices/{edge_id}/live/start")
-@router.post("/api/v1/nodes/{edge_id}/live/start")
-async def start_device_live(edge_id: str):
-    """Bật luồng phát trực tiếp camera CSI từ Jetson Nano lên MediaMTX (On-Demand)."""
+@router.post("/api/v1/devices/{edge_id}/live/start", dependencies=[Depends(require_staff)])
+@router.post("/api/v1/nodes/{edge_id}/live/start", dependencies=[Depends(require_staff)])
+async def start_device_live(edge_id: str, request: Request):
+    """Bật luồng phát trực tiếp camera CSI từ Jetson Nano lên MediaMTX (On-Demand - Yêu cầu Staff)."""
     node = store.get_node(edge_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Thiết bị '{edge_id}' không tồn tại")
@@ -100,9 +118,18 @@ async def start_device_live(edge_id: str):
             detail="AI Pipeline chưa khởi động trên Jetson (Camera đang tự do để setup ROI). Hãy chạy main.py trước khi xem Live Cam."
         )
 
-    urls = _build_stream_urls(edge_id)
+    urls = _build_stream_urls(edge_id, request=request)
     try:
-        res = await _send_live_mqtt_command(edge_id, "start_live", timeout_s=8.0)
+        # Fix V6: Gửi kèm địa chỉ RTSP ingest URL qua MQTT để Jetson tự nhận diện máy chủ MediaMTX
+        res = await _send_live_mqtt_command(
+            edge_id=edge_id,
+            action="start_live",
+            params={"rtsp_url": urls["rtsp_url"]},
+            timeout_s=8.0
+        )
+        if res.get("status") in ("error", "failed", "rejected"):
+            err_msg = res.get("message") or "LiveStreamController chưa sẵn sàng"
+            raise HTTPException(status_code=500, detail=f"Jetson báo lỗi: {err_msg}")
         return {
             "edge_id": edge_id,
             "status": "started",
@@ -116,10 +143,10 @@ async def start_device_live(edge_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/api/v1/devices/{edge_id}/live/stop")
-@router.post("/api/v1/nodes/{edge_id}/live/stop")
+@router.post("/api/v1/devices/{edge_id}/live/stop", dependencies=[Depends(require_staff)])
+@router.post("/api/v1/nodes/{edge_id}/live/stop", dependencies=[Depends(require_staff)])
 async def stop_device_live(edge_id: str):
-    """Dừng luồng phát trực tiếp camera CSI trên Jetson Nano."""
+    """Dừng luồng phát trực tiếp camera CSI trên Jetson Nano (Yêu cầu Staff)."""
     node = store.get_node(edge_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Thiết bị '{edge_id}' không tồn tại")
@@ -137,10 +164,10 @@ async def stop_device_live(edge_id: str):
         return {"edge_id": edge_id, "status": "stopped", "message": str(e)}
 
 
-@router.post("/api/v1/devices/{edge_id}/live/keepalive")
-@router.post("/api/v1/nodes/{edge_id}/live/keepalive")
+@router.post("/api/v1/devices/{edge_id}/live/keepalive", dependencies=[Depends(require_staff)])
+@router.post("/api/v1/nodes/{edge_id}/live/keepalive", dependencies=[Depends(require_staff)])
 async def keepalive_device_live(edge_id: str):
-    """Gửi ping keep-alive định kỳ từ người xem WebGIS để duy trì luồng."""
+    """Gửi ping keep-alive định kỳ từ người xem WebGIS để duy trì luồng (Yêu cầu Staff)."""
     from services.mqtt_service import mqtt_service
     from routers.remote_control import _new_command_id
 
@@ -151,13 +178,13 @@ async def keepalive_device_live(edge_id: str):
 
 @router.get("/api/v1/devices/{edge_id}/live")
 @router.get("/api/v1/nodes/{edge_id}/live")
-async def get_device_live_info(edge_id: str):
+async def get_device_live_info(edge_id: str, request: Request):
     """Lấy thông tin và URL xem trực tiếp (WebRTC / HLS) của node camera."""
     node = store.get_node(edge_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Thiết bị '{edge_id}' không tồn tại")
 
-    urls = _build_stream_urls(edge_id)
+    urls = _build_stream_urls(edge_id, request=request)
     return {
         "edge_id": edge_id,
         "device_name": node.get("device_name", edge_id),
@@ -165,154 +192,3 @@ async def get_device_live_info(edge_id: str):
         **urls
     }
 
-
-@router.get("/api/v1/live/{edge_id}/status")
-async def get_live_status(edge_id: str):
-    """Lấy trạng thái kết nối và người xem của camera live stream."""
-    return JSONResponse(live_stream_manager.get_status(edge_id))
-
-
-@router.websocket("/ws/ingest/{edge_id}")
-async def websocket_ingest(
-    websocket: WebSocket,
-    edge_id: str,
-    token: Optional[str] = Query(None)
-):
-    """
-    WS Ingest từ Jetson Nano lên Backend:
-    - Xác thực qua X-Edge-Token hoặc ?token=
-    - Handshake đầu tiên: {"type": "hello", "edge_id": "...", "width": ..., "height": ..., "fps": ...}
-    - Backend gửi {"type": "start", "fps": 10} khi có viewer, {"type": "stop"} khi hết viewer
-    - Jetson bơm từng frame JPEG dạng binary bytes
-    """
-    # 1. Kiểm tra xác thực Token
-    auth_header = websocket.headers.get("x-edge-token") or websocket.headers.get("X-Edge-Token")
-    client_token = auth_header or token or ""
-
-    if client_token not in VALID_TOKENS:
-        logger.warning("[Ingest:%s] Rejected connection: Invalid token '%s'", edge_id, client_token)
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Unauthorized edge token")
-        return
-
-    await websocket.accept()
-    logger.info("[Ingest:%s] Ingest connection accepted", edge_id)
-
-    try:
-        # 2. Chờ handshake hello message
-        first_msg = await websocket.receive_text()
-        try:
-            hello_data = json.loads(first_msg)
-            if hello_data.get("type") != "hello":
-                raise ValueError("Expected type 'hello'")
-        except Exception as e:
-            logger.error("[Ingest:%s] Invalid handshake: %s", edge_id, e)
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid handshake")
-            return
-
-        # 3. Đăng ký Jetson vào LiveStreamManager
-        await live_stream_manager.register_jetson(edge_id, websocket, hello_data)
-
-        # 4. Vòng lặp nhận binary JPEG frame từ Jetson
-        while True:
-            message = await websocket.receive()
-            if "bytes" in message and message["bytes"]:
-                await live_stream_manager.receive_frame(edge_id, message["bytes"])
-            elif "text" in message and message["text"]:
-                try:
-                    data = json.loads(message["text"])
-                    if data.get("type") == "ping":
-                        await websocket.send_text(json.dumps({"type": "pong"}))
-                except Exception:
-                    pass
-
-    except WebSocketDisconnect:
-        logger.info("[Ingest:%s] Jetson disconnected normally", edge_id)
-    except Exception as e:
-        logger.error("[Ingest:%s] Ingest error: %s", edge_id, e)
-    finally:
-        await live_stream_manager.unregister_jetson(edge_id, websocket)
-
-
-@router.websocket("/ws/live/{edge_id}")
-async def websocket_live_viewer(
-    websocket: WebSocket,
-    edge_id: str,
-    token: Optional[str] = Query(None)
-):
-    """
-    WS Live Viewer cho người dùng WebGIS:
-    - Khi hover vào node camera, browser mở kết nối
-    - Backend gửi trạng thái: {"type": "status", "state": "connecting|live|offline|stalled|full"}
-    - Bơm trực tiếp binary JPEG theo cơ chế Zero-Queue
-    """
-    await websocket.accept()
-
-    # 1. Đăng ký viewer
-    success, reason = await live_stream_manager.add_viewer(edge_id, websocket)
-    if not success:
-        logger.warning("[LiveViewer:%s] Viewer rejected: %s", edge_id, reason)
-        await websocket.send_text(json.dumps({
-            "type": "status",
-            "state": "full",
-            "message": "Số lượng người xem đồng thời vượt quá giới hạn"
-        }))
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Max viewers limit reached")
-        return
-
-    # 2. Gửi trạng thái ban đầu
-    initial_status = live_stream_manager.get_status(edge_id)
-    curr_state = initial_status["state"]
-    if curr_state == "ready":
-        curr_state = "connecting"
-    await websocket.send_text(json.dumps({"type": "status", "state": curr_state}))
-
-    # 3. Task nền phát hiện client browser đóng tab hoặc ngắt kết nối
-    async def detect_disconnect():
-        try:
-            while True:
-                await websocket.receive_text()
-        except Exception:
-            pass
-
-    disconnect_task = asyncio.create_task(detect_disconnect())
-
-    stream = await live_stream_manager.get_or_create(edge_id)
-    seen_seq = 0
-    last_state_sent = curr_state
-
-    try:
-        while True:
-            if disconnect_task.done():
-                break
-
-            # Chờ frame mới được notify từ Jetson qua asyncio.Condition
-            async with stream.condition:
-                try:
-                    await asyncio.wait_for(stream.condition.wait(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    pass
-
-            # Ra ngoài khối condition lock để gửi qua mạng
-            if not stream.jetson_ws:
-                if last_state_sent != "offline":
-                    await websocket.send_text(json.dumps({"type": "status", "state": "offline"}))
-                    last_state_sent = "offline"
-            elif stream.last_frame_time > 0 and (time.time() - stream.last_frame_time > 5.0):
-                if last_state_sent != "stalled":
-                    await websocket.send_text(json.dumps({"type": "status", "state": "stalled"}))
-                    last_state_sent = "stalled"
-            elif stream.latest_frame and stream.frame_seq > seen_seq:
-                frame_bytes = stream.latest_frame
-                seen_seq = stream.frame_seq
-                if last_state_sent != "live":
-                    await websocket.send_text(json.dumps({"type": "status", "state": "live"}))
-                    last_state_sent = "live"
-                await websocket.send_bytes(frame_bytes)
-
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        logger.debug("[LiveViewer:%s] Viewer loop error: %s", edge_id, e)
-    finally:
-        disconnect_task.cancel()
-        await live_stream_manager.remove_viewer(edge_id, websocket)

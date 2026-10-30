@@ -41,7 +41,7 @@ class MQTTService:
 
         try:
             print(f"[MQTT] Connecting to broker {MQTT_HOST}:{MQTT_PORT}...")
-            self._client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=60)
+            self._client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=15)
             self._client.loop_start()
         except Exception as e:
             print(f"[MQTT] Connect error: {e}")
@@ -75,8 +75,7 @@ class MQTTService:
             client.subscribe("traffic/+/liveness", qos=1)
             client.subscribe("traffic/discovery/announce", qos=1)
             client.subscribe("traffic/+/command-result", qos=1)
-            client.subscribe("traffic/hw/+/command-result", qos=1)
-            print("[MQTT] Subscribed to traffic/+/+, traffic/hw/+/+, and traffic/discovery/announce topics")
+            print("[MQTT] Subscribed to traffic/+/+ and traffic/discovery/announce topics")
         else:
             print(f"[MQTT] Connection failed with code: {rc}")
 
@@ -110,12 +109,7 @@ class MQTTService:
                     })
                 return
 
-            if len(parts) >= 4 and parts[1] == "hw":
-                clean_mac = parts[2]
-                subtopic = parts[3]
-                mapped_node = store.get_node_by_mac(clean_mac)
-                edge_id = mapped_node["edge_id"] if mapped_node else clean_mac
-            elif len(parts) >= 3:
+            if len(parts) >= 3:
                 edge_id = parts[1]
                 subtopic = parts[2]
             else:
@@ -136,27 +130,39 @@ class MQTTService:
             reported_lon = payload.get("longitude")
 
             if subtopic == "telemetry":
-                approved_node = (store.get_node_by_mac(mac_addr) if mac_addr else None) or store.get_node(edge_id)
-                if approved_node:
-                    target_id = approved_node["edge_id"]
-                    if not payload.get("segment_id") and approved_node.get("segment_id"):
-                        payload["segment_id"] = approved_node["segment_id"]
-                    store.update_telemetry(target_id, payload)
-                    self._broadcast_async({
-                        "type": "telemetry",
-                        "edge_id": target_id,
-                        "coordinates": [float(approved_node.get("longitude", 106.65)), float(approved_node.get("latitude", 10.84))],
-                        "data": payload
-                    })
-                    seg_id = approved_node.get("segment_id")
-                    if seg_id:
-                        seg = store.get_segment(seg_id)
-                        if seg:
-                            self._broadcast_async({
-                                "type": "segment_update",
-                                "segment_id": seg_id,
-                                "data": seg
-                            })
+                target_nodes = []
+                direct_node = store.get_node(edge_id)
+                if direct_node:
+                    target_nodes.append(direct_node)
+                if mac_addr:
+                    mac_node = store.get_node_by_mac(mac_addr)
+                    if mac_node and mac_node not in target_nodes:
+                        target_nodes.append(mac_node)
+                for nid, n in store.nodes.items():
+                    if n.get("actual_hardware_id") == edge_id and n not in target_nodes:
+                        target_nodes.append(n)
+
+                if target_nodes:
+                    for approved_node in target_nodes:
+                        target_id = approved_node["edge_id"]
+                        if not payload.get("segment_id") and approved_node.get("segment_id"):
+                            payload["segment_id"] = approved_node["segment_id"]
+                        store.update_telemetry(target_id, payload)
+                        self._broadcast_async({
+                            "type": "telemetry",
+                            "edge_id": target_id,
+                            "coordinates": [float(approved_node.get("longitude", 106.65)), float(approved_node.get("latitude", 10.84))],
+                            "data": payload
+                        })
+                        seg_id = approved_node.get("segment_id")
+                        if seg_id:
+                            seg = store.get_segment(seg_id)
+                            if seg:
+                                self._broadcast_async({
+                                    "type": "segment_update",
+                                    "segment_id": seg_id,
+                                    "data": seg
+                                })
                 else:
                     # Node CHƯA được phê duyệt → chỉ cập nhật hàng chờ pending
                     is_new = edge_id not in store.pending_nodes and (not mac_addr or not store.get_pending_by_mac(mac_addr))
@@ -180,7 +186,9 @@ class MQTTService:
                     approved_edge_id = approved_node["edge_id"]
                     node = store.nodes[approved_edge_id]
                     node["status"] = "online"
-                    node["last_seen"] = payload.get("timestamp") or time.strftime("%Y-%m-%dT%H:%M:%S+07:00")
+                    # Dùng thời gian nhận tại Server cho liveness, miễn nhiễm với sai lệch đồng hồ Edge (Fix D5)
+                    node["last_seen"] = datetime.now().isoformat()
+                    node["device_reported_time"] = payload.get("timestamp")
                     if mac_addr and not node.get("mac_address"):
                         node["mac_address"] = mac_addr
                     if serial_num and not node.get("serial_number"):
@@ -188,9 +196,35 @@ class MQTTService:
                     for key in ("model_version", "camera_id"):
                         if payload.get(key):
                             node[key] = payload[key]
+                    if "pipeline_running" in payload:
+                        # Kiểm tra xem telemetry có đang hoạt động trong vòng 15s gần nhất không
+                        last_telem = node.get("last_telemetry_at")
+                        recent_telem = False
+                        if last_telem:
+                            try:
+                                dt = datetime.fromisoformat(last_telem)
+                                recent_telem = (datetime.now() - dt).total_seconds() < 15.0
+                            except Exception:
+                                pass
+                        if recent_telem:
+                            node["pipeline_running"] = True
+                        else:
+                            node["pipeline_running"] = bool(payload["pipeline_running"])
+                            node["pipeline_pid"] = payload.get("pipeline_pid")
+                    elif subtopic == "registration":
+                        node["pipeline_running"] = False
+                        node["pipeline_pid"] = None
 
-                    # ── Đối chiếu 1: Kiểm tra lệch mã định danh logic (ID Mismatch) ──
-                    if edge_id != approved_edge_id and edge_id != "hw":
+                    # Đồng bộ sang các node quản trị liên kết khác (nếu có)
+                    for other_id, other_node in store.nodes.items():
+                        if other_node.get("actual_hardware_id") == edge_id and other_id != approved_edge_id:
+                            other_node["status"] = node["status"]
+                            other_node["last_seen"] = node["last_seen"]
+                            other_node["pipeline_running"] = node.get("pipeline_running", False)
+                            other_node["pipeline_pid"] = node.get("pipeline_pid")
+
+                    # ── Đối chiếu 1: Kiểm tra lệch mã định danh logic (ID Mismatch) (Fix L9) ──
+                    if edge_id != approved_edge_id:
                         node["actual_hardware_id"] = edge_id
                         node["id_mismatch"] = True
                         node["mismatch_message"] = f"Thiết bị tự xưng là '{edge_id}', mã quản lý Web là '{approved_edge_id}'."
@@ -205,12 +239,15 @@ class MQTTService:
                         node["id_mismatch"] = False
                         node.pop("mismatch_message", None)
 
-                    # ── Đối chiếu 2: Kiểm tra sai lệch vị trí địa lý GPS (Spatial Drift) ──
-                    if reported_lat is not None and reported_lon is not None:
+                    # ── Đối chiếu 2: Kiểm tra sai lệch vị trí địa lý GPS (Spatial Drift) (Fix L9) ──
+                    # CHỈ kiểm tra nếu có GPS phần cứng thực tế (vd module NEO-7M báo has_gps=True).
+                    # Tuyệt đối không so sánh 2 số tĩnh nhập tay để tránh cảnh báo giả lệch 1131km.
+                    hw_gps = payload.get("hardware_gps") or (payload.get("latest_health") or {}).get("hardware_gps")
+                    if isinstance(hw_gps, dict) and hw_gps.get("has_gps") and hw_gps.get("latitude") and hw_gps.get("longitude"):
                         try:
                             import math
-                            rlat = float(reported_lat)
-                            rlon = float(reported_lon)
+                            rlat = float(hw_gps["latitude"])
+                            rlon = float(hw_gps["longitude"])
                             slat = float(node.get("latitude", 0))
                             slon = float(node.get("longitude", 0))
                             if slat != 0 and slon != 0 and rlat != 0 and rlon != 0:
@@ -218,11 +255,12 @@ class MQTTService:
                                 dlon = math.radians(rlon - slon)
                                 a = math.sin(dlat / 2.0)**2 + math.cos(math.radians(slat)) * math.cos(math.radians(rlat)) * math.sin(dlon / 2.0)**2
                                 drift_m = 6371000.0 * 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
-                                if drift_m > 100.0:
+                                if drift_m > 50.0:
                                     node["spatial_drift"] = {
                                         "drift_m": round(drift_m, 1),
                                         "reported_coords": [rlat, rlon],
-                                        "saved_coords": [slat, slon]
+                                        "saved_coords": [slat, slon],
+                                        "is_hardware_gps": True
                                     }
                                     self._broadcast_async({
                                         "type": "spatial_drift_warning",
@@ -230,23 +268,33 @@ class MQTTService:
                                         "drift_m": round(drift_m, 1),
                                         "reported_coords": [rlat, rlon],
                                         "saved_coords": [slat, slon],
-                                        "message": f"Cảnh báo di dời: Tọa độ GPS của trạm '{approved_edge_id}' lệch {round(drift_m, 1)}m so với vị trí đã lưu trên bản đồ."
+                                        "message": f"Cảnh báo di dời phần cứng: GPS trạm '{approved_edge_id}' lệch {round(drift_m, 1)}m so với vị trí quy hoạch."
                                     })
                                 else:
                                     node.pop("spatial_drift", None)
                         except Exception:
                             pass
+                    else:
+                        node.pop("spatial_drift", None)
 
-                    store._persist_nodes()
+                    # Chỉ ghi đĩa khi đăng ký mới (registration), không ghi đĩa định kỳ mỗi heartbeat (Fix D4)
+                    if subtopic == "registration":
+                        store._persist_nodes()
+
                     event_type = "node_registered" if subtopic == "registration" else "heartbeat"
-                    self._broadcast_async({
+                    # Gửi delta payload cho heartbeat, tránh dump toàn bộ object node gây nghẽn WS (Fix D4)
+                    hb_msg = {
                         "type": event_type,
                         "edge_id": approved_edge_id,
                         "status": node["status"],
                         "coordinates": [float(node.get("longitude", 106.65)), float(node.get("latitude", 10.84))],
                         "last_seen": node["last_seen"],
-                        "node": store.get_node(approved_edge_id)
-                    })
+                        "data_status": node.get("data_status", "live"),
+                        "pipeline_running": node.get("pipeline_running", False)
+                    }
+                    if event_type == "node_registered":
+                        hb_msg["node"] = store.get_node(approved_edge_id)
+                    self._broadcast_async(hb_msg)
                 else:
                     # Thiết bị mới hoàn toàn → thêm vào pending
                     is_new = edge_id not in store.pending_nodes and (not mac_addr or not store.get_pending_by_mac(mac_addr))
@@ -274,13 +322,36 @@ class MQTTService:
                         })
 
             elif subtopic == "device-health":
-                store.update_node_health(edge_id, payload)
-                self._broadcast_async({
-                    "type": "device_health",
-                    "edge_id": edge_id,
-                    "command_id": payload.get("command_id"),
-                    "health": payload
-                })
+                target_nodes = []
+                direct_node = store.get_node(edge_id)
+                if direct_node:
+                    target_nodes.append(direct_node)
+                if mac_addr:
+                    mac_node = store.get_node_by_mac(mac_addr)
+                    if mac_node and mac_node not in target_nodes:
+                        target_nodes.append(mac_node)
+                for nid, n in store.nodes.items():
+                    if n.get("actual_hardware_id") == edge_id and n not in target_nodes:
+                        target_nodes.append(n)
+
+                if not target_nodes:
+                    store.update_node_health(edge_id, payload)
+                    self._broadcast_async({
+                        "type": "device_health",
+                        "edge_id": edge_id,
+                        "command_id": payload.get("command_id"),
+                        "health": payload
+                    })
+                else:
+                    for node_item in target_nodes:
+                        tid = node_item["edge_id"]
+                        store.update_node_health(tid, payload)
+                        self._broadcast_async({
+                            "type": "device_health",
+                            "edge_id": tid,
+                            "command_id": payload.get("command_id"),
+                            "health": payload
+                        })
 
             elif subtopic == "command-result":
                 command_id = payload.get("command_id", "")
@@ -295,6 +366,22 @@ class MQTTService:
                     mapped_node = store.get_node_by_mac(mac_addr)
                     if mapped_node:
                         effective_edge_id = mapped_node["edge_id"]
+
+                action = payload.get("action", "")
+                status = payload.get("status", "")
+                msg_val = payload.get("message", "")
+
+                if action in ("start_pipeline", "start_csi"):
+                    if status == "completed":
+                        pid = msg_val.get("pid") if isinstance(msg_val, dict) else None
+                        store.update_pipeline_status(effective_edge_id, running=True, pid=pid)
+                elif action in ("stop_pipeline", "restart_analytics"):
+                    store.update_pipeline_status(effective_edge_id, running=False)
+                elif action == "request_status":
+                    if isinstance(msg_val, dict):
+                        is_running = msg_val.get("pipeline_running", False)
+                        pid = msg_val.get("pid")
+                        store.update_pipeline_status(effective_edge_id, running=is_running, pid=pid)
 
                 self._broadcast_async({
                     "type": "command_result",
@@ -314,58 +401,37 @@ class MQTTService:
             asyncio.run_coroutine_threadsafe(ws_manager.broadcast(message), self._loop)
 
     def publish_command(self, edge_id: str, action: str, command_id: str, params: dict = None) -> bool:
-        """Publish remote command to logic topic, hardware topic (via MAC), and alias topic."""
-        node = store.get_node(edge_id)
-        mac_addr = node.get("mac_address") if node else None
-        actual_hw_id = node.get("actual_hardware_id") if node else None
-
+        """Publish remote command to logic topic ONLY (Single Source of Truth, Fix L1)."""
         payload = {
             "action": action,
             "command_id": command_id,
             "params": params or {},
             "target_edge_id": edge_id,
-            "mac_address": mac_addr,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S+07:00")
         }
         raw_msg = json.dumps(payload, ensure_ascii=False)
 
         if self._client and self._connected:
-            published = False
-            # 1. Primary Logic Topic: traffic/{edge_id}/command
-            try:
-                topic = f"traffic/{edge_id}/command"
-                self._client.publish(topic, raw_msg, qos=1)
-                published = True
-                print(f"[MQTT CMD] Sent {action} (ID={command_id}) to {topic}")
-            except Exception as e:
-                print(f"[MQTT CMD ERROR] {topic}: {e}")
+            topics = [f"traffic/{edge_id}/command"]
+            node = store.get_node(edge_id)
+            if node and node.get("actual_hardware_id") and node.get("actual_hardware_id") != edge_id:
+                hw_topic = f"traffic/{node['actual_hardware_id']}/command"
+                if hw_topic not in topics:
+                    topics.append(hw_topic)
 
-            # 2. Hardware-Centric Topic: traffic/hw/{clean_mac}/command
-            if mac_addr:
-                clean_mac = str(mac_addr).replace(":", "").replace("-", "").strip().lower()
-                if clean_mac and clean_mac != "000000000000":
-                    hw_topic = f"traffic/hw/{clean_mac}/command"
-                    try:
-                        self._client.publish(hw_topic, raw_msg, qos=1)
-                        published = True
-                        print(f"[MQTT CMD] Sent {action} (ID={command_id}) to HW topic {hw_topic}")
-                    except Exception as e:
-                        print(f"[MQTT CMD ERROR] {hw_topic}: {e}")
-
-            # 3. Alias Topic: traffic/{actual_hardware_id}/command
-            if actual_hw_id and actual_hw_id != edge_id:
-                alias_topic = f"traffic/{actual_hw_id}/command"
+            success = False
+            for topic in topics:
                 try:
-                    self._client.publish(alias_topic, raw_msg, qos=1)
-                    published = True
-                    print(f"[MQTT CMD] Sent {action} (ID={command_id}) to alias topic {alias_topic}")
+                    self._client.publish(topic, raw_msg, qos=1)
+                    print(f"[MQTT CMD] Sent {action} (ID={command_id}) to {topic}")
+                    success = True
                 except Exception as e:
-                    print(f"[MQTT CMD ERROR] {alias_topic}: {e}")
-
-            return published
+                    print(f"[MQTT CMD ERROR] {topic}: {e}")
+            return success
         else:
             # Fallback simulated response if MQTT broker is offline
             print(f"[MQTT LOCAL] Broker not connected, simulated command: {action}")
+            node = store.get_node(edge_id)
             if action == "get_health":
                 if node:
                     health = node.get("latest_health", {})
@@ -373,9 +439,33 @@ class MQTTService:
                         "type": "device_health",
                         "edge_id": edge_id,
                         "command_id": command_id,
-                        "health": health
+                        "data": health
                     })
-            return True
+            return False
+
+    def publish_provisioning_approval(self, mac_address: str, assigned_edge_id: str, approved_data: dict = None) -> bool:
+        """Send provisioning approval payload to the device using its hardware MAC address."""
+        if not mac_address:
+            return False
+        clean_mac = str(mac_address).replace(":", "").replace("-", "").strip().lower()
+        topic = f"traffic/provisioning/{clean_mac}"
+        payload = {
+            "event": "node_approved",
+            "assigned_edge_id": assigned_edge_id,
+            "mac_address": mac_address,
+            "approved_at": time.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
+            "config": approved_data or {}
+        }
+        raw_msg = json.dumps(payload, ensure_ascii=False)
+        if self._client and self._connected:
+            try:
+                self._client.publish(topic, raw_msg, qos=1)
+                print(f"[ZTP PROVISION] Sent assigned_edge_id={assigned_edge_id} to {topic}")
+                return True
+            except Exception as e:
+                print(f"[ZTP PROVISION ERROR] {topic}: {e}")
+                return False
+        return False
 
     def _live_simulation_loop(self):
         """Simulate micro-variations in traffic telemetry every 3 seconds to keep WebGIS alive."""
@@ -431,4 +521,18 @@ class MQTTService:
                 })
 
 
-mqtt_service = MQTTService()
+import sys
+
+if "webgis.backend.services.mqtt_service" in sys.modules and hasattr(sys.modules["webgis.backend.services.mqtt_service"], "mqtt_service"):
+    mqtt_service = sys.modules["webgis.backend.services.mqtt_service"].mqtt_service
+elif "services.mqtt_service" in sys.modules and hasattr(sys.modules["services.mqtt_service"], "mqtt_service"):
+    mqtt_service = sys.modules["services.mqtt_service"].mqtt_service
+else:
+    mqtt_service = MQTTService()
+
+_curr_mod = sys.modules.get(__name__)
+if _curr_mod:
+    sys.modules["services.mqtt_service"] = _curr_mod
+    sys.modules["webgis.backend.services.mqtt_service"] = _curr_mod
+
+

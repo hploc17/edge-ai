@@ -1,11 +1,11 @@
 {
   "edge-110": {
     "edge_id": "edge-110",
-    "status": "online",
-    "last_seen": "2026-10-27T12:26:40.862717",
-    "traffic_status": "UNKNOWN",
+    "status": "offline",
+    "last_seen": "2026-10-29T19:34:31.837672",
+    "traffic_status": "STALE",
     "congestion_score": 0,
-    "avg_speed_kmh": null,
+    "avg_speed_kmh": 0.0,
     "current_vehicle_count": 0,
     "stopped_vehicle_count": 0,
     "density_veh_per_km_lane": 0.0,
@@ -17,36 +17,37 @@
       "truck": 0
     },
     "latest_health": {
-      "command_id": "diag-7e6dab0c",
+      "command_id": "diag-445f4359",
       "edge_id": "edge-110",
       "camera_id": "camera-01",
       "segment_id": "segment-001",
-      "timestamp": "2026-10-27T11:59:09+07:00",
+      "mac_address": "00:04:4B:E7:44:E8",
+      "timestamp": "2026-10-29T16:33:22+07:00",
       "general": {
-        "uptime_seconds": 5128,
-        "boot_time": "2026-10-27T03:33:41+07:00",
+        "uptime_seconds": 1014,
+        "boot_time": "2026-10-29T09:16:28+07:00",
         "service_status": "running"
       },
       "network": {
         "local_ip": "192.168.88.176",
-        "mac_address": "80:32:53:8A:88:B5",
+        "mac_address": "00:04:4B:E7:44:E8",
         "status": "connected"
       },
       "hardware": {
-        "cpu_usage_pct": 4,
+        "cpu_usage_pct": 11,
         "cpu_cores": 4,
-        "ram_used_mb": 1813,
+        "ram_used_mb": 1563,
         "ram_total_mb": 3956,
-        "ram_usage_pct": 39,
-        "swap_used_mb": 249,
+        "ram_usage_pct": 40,
+        "swap_used_mb": 4,
         "swap_total_mb": 1978,
         "gpu_usage_pct": 0,
-        "temperature_c": 37.0,
+        "temperature_c": 36.0,
         "power_mode": "10W_MAXN"
       },
       "storage": {
         "disk_total_gb": 58.41,
-        "disk_free_gb": 17.19,
+        "disk_free_gb": 17.2,
         "disk_usage_pct": 66,
         "outbox_unsent_images": 0
       },
@@ -54,13 +55,12 @@
         "camera_status": "streaming",
         "pipeline_fps": 0.0,
         "inference_latency_ms": null
-      },
-      "mac_address": "80:32:53:8A:88:B5"
+      }
     },
     "traffic": {
       "vehicle_count": 0,
-      "average_speed": null,
-      "congestion_level": "UNKNOWN",
+      "average_speed": 0.0,
+      "congestion_level": "STALE",
       "congestion_score": 0,
       "stopped_vehicle_count": 0,
       "density_veh_per_km_lane": 0.0,
@@ -73,11 +73,271 @@
       }
     },
     "system": {
-      "cpu_usage": 43,
-      "gpu_usage": 991,
-      "ram_usage": 83,
-      "temperature": 73.0,
+      "cpu_usage": 11,
+      "gpu_usage": 0,
+      "ram_usage": 40,
+      "temperature": 36.0,
       "fps": 22.3
-    }
+    },
+    "pipeline_running": false,
+    "pipeline_pid": null,
+    "last_telemetry_at": null,
+    "data_status": "stale"
+  },
+  "edge-perf-01": {
+    "edge_id": "edge-perf-01",
+    "status": "offline",
+    "last_seen": "2026-10-29T11:21:43.925997",
+    "traffic_status": "STALE",
+    "congestion_score": 0,
+    "avg_speed_kmh": 0.0,
+    "current_vehicle_count": 0,
+    "stopped_vehicle_count": 0,
+    "density_veh_per_km_lane": 0.0,
+    "counts_by_class": {},
+    "latest_health": null,
+    "traffic": {
+      "vehicle_count": 0,
+      "average_speed": 0.0,
+      "congestion_level": "STALE",
+      "congestion_score": 0,
+      "stopped_vehicle_count": 0,
+      "density_veh_per_km_lane": 0.0,
+      "counts_by_class": {}
+    },
+    "system": {},
+    "pipeline_running": false,
+    "pipeline_pid": null,
+    "last_telemetry_at": "2026-10-29T11:21:43.925997",
+    "data_status": "stale"
+  },
+  "edge-liveness-01": {
+    "edge_id": "edge-liveness-01",
+    "status": "offline",
+    "last_seen": "2020-01-01T00:00:00",
+    "traffic_status": "STALE",
+    "congestion_score": 0,
+    "avg_speed_kmh": 0.0,
+    "current_vehicle_count": 0,
+    "stopped_vehicle_count": 0,
+    "density_veh_per_km_lane": 0.0,
+    "counts_by_class": {},
+    "latest_health": null,
+    "traffic": {
+      "congestion_level": "STALE",
+      "congestion_score": 0,
+      "vehicle_count": 0,
+      "average_speed": 0.0
+    },
+    "system": {},
+    "pipeline_running": false,
+    "pipeline_pid": null,
+    "last_telemetry_at": null,
+    "data_status": "stale"
+  },
+  "test-node-concurrency": {
+    "edge_id": "test-node-concurrency",
+    "status": "offline",
+    "last_seen": "2026-10-29T11:21:43.657078",
+    "traffic_status": "STALE",
+    "congestion_score": 0,
+    "avg_speed_kmh": 0.0,
+    "current_vehicle_count": 0,
+    "stopped_vehicle_count": 0,
+    "density_veh_per_km_lane": 0.0,
+    "counts_by_class": {
+      "motorcycle": 0,
+      "car": 2
+    },
+    "latest_health": {
+      "general": {
+        "service_status": "running",
+        "uptime_seconds": 3600
+      },
+      "network": {
+        "mac_address": "00:04:4B:E7:44:E8",
+        "status": "connected"
+      },
+      "hardware": {
+        "cpu_usage_pct": 35.0,
+        "gpu_usage_pct": 50.0,
+        "ram_usage_pct": 45.0,
+        "temperature_c": 48.5,
+        "power_mode": "10W_MAXN"
+      },
+      "pipeline": {
+        "camera_status": "streaming",
+        "pipeline_fps": 28.5,
+        "inference_latency_ms": 35.1
+      }
+    },
+    "traffic": {
+      "vehicle_count": 0,
+      "average_speed": 0.0,
+      "congestion_level": "STALE",
+      "congestion_score": 0,
+      "stopped_vehicle_count": 0,
+      "density_veh_per_km_lane": 0.0,
+      "counts_by_class": {
+        "motorcycle": 0,
+        "car": 2
+      }
+    },
+    "system": {
+      "cpu_usage": 35.0,
+      "gpu_usage": 50.0,
+      "ram_usage": 45.0,
+      "temperature": 48.5,
+      "fps": 28.5
+    },
+    "pipeline_running": false,
+    "pipeline_pid": null,
+    "last_telemetry_at": "2026-10-29T11:21:43.657078",
+    "data_status": "stale"
+  },
+  "test-node-stale": {
+    "edge_id": "test-node-stale",
+    "status": "offline",
+    "last_seen": "2026-10-29T11:21:43.740393",
+    "traffic_status": "STALE",
+    "congestion_score": 0,
+    "avg_speed_kmh": 0.0,
+    "current_vehicle_count": 0,
+    "stopped_vehicle_count": 0,
+    "density_veh_per_km_lane": 0.0,
+    "counts_by_class": {
+      "motorcycle": 25,
+      "car": 10
+    },
+    "latest_health": null,
+    "traffic": {
+      "vehicle_count": 0,
+      "average_speed": 0.0,
+      "congestion_level": "STALE",
+      "congestion_score": 0,
+      "stopped_vehicle_count": 0,
+      "density_veh_per_km_lane": 0.0,
+      "counts_by_class": {
+        "motorcycle": 25,
+        "car": 10
+      }
+    },
+    "system": {},
+    "pipeline_running": false,
+    "pipeline_pid": null,
+    "last_telemetry_at": "2026-10-29T11:21:43.740393",
+    "data_status": "stale"
+  },
+  "test-edge-01": {
+    "edge_id": "test-edge-01",
+    "status": "offline",
+    "last_seen": "2026-10-29T11:39:03.598496",
+    "traffic_status": "STALE",
+    "congestion_score": 0,
+    "avg_speed_kmh": 0.0,
+    "current_vehicle_count": 0,
+    "stopped_vehicle_count": 0,
+    "density_veh_per_km_lane": 0.0,
+    "counts_by_class": {},
+    "latest_health": null,
+    "traffic": {
+      "vehicle_count": 0,
+      "average_speed": 0.0,
+      "congestion_level": "STALE",
+      "congestion_score": 0,
+      "stopped_vehicle_count": 0,
+      "density_veh_per_km_lane": 0.0,
+      "counts_by_class": {}
+    },
+    "system": {},
+    "pipeline_running": false,
+    "pipeline_pid": null,
+    "last_telemetry_at": "2026-10-29T11:39:03.598496",
+    "data_status": "stale"
+  },
+  "edge-01": {
+    "edge_id": "edge-01",
+    "status": "online",
+    "last_seen": "2026-10-29T19:34:31.836349",
+    "traffic_status": "STALE",
+    "congestion_score": 0,
+    "avg_speed_kmh": 0.0,
+    "current_vehicle_count": 0,
+    "stopped_vehicle_count": 0,
+    "density_veh_per_km_lane": 0.0,
+    "counts_by_class": {
+      "bicycle": 0,
+      "bus": 0,
+      "car": 0,
+      "motorcycle": 0,
+      "truck": 0
+    },
+    "latest_health": {
+      "command_id": "diag-c6603655",
+      "edge_id": "edge-01",
+      "camera_id": "camera-01",
+      "segment_id": "segment-001",
+      "mac_address": "00:04:4B:E7:44:E8",
+      "timestamp": "2026-10-29T17:26:43+07:00",
+      "general": {
+        "uptime_seconds": 4215,
+        "boot_time": "2026-10-29T09:16:28+07:00",
+        "service_status": "running"
+      },
+      "network": {
+        "local_ip": "192.168.88.176",
+        "mac_address": "00:04:4B:E7:44:E8",
+        "status": "connected"
+      },
+      "hardware": {
+        "cpu_usage_pct": 15,
+        "cpu_cores": 4,
+        "ram_used_mb": 1778,
+        "ram_total_mb": 3956,
+        "ram_usage_pct": 38,
+        "swap_used_mb": 336,
+        "swap_total_mb": 1978,
+        "gpu_usage_pct": 0,
+        "temperature_c": 44.5,
+        "power_mode": "10W_MAXN"
+      },
+      "storage": {
+        "disk_total_gb": 58.41,
+        "disk_free_gb": 17.19,
+        "disk_usage_pct": 66,
+        "outbox_unsent_images": 0
+      },
+      "pipeline": {
+        "camera_status": "streaming",
+        "pipeline_fps": 0.0,
+        "inference_latency_ms": null
+      }
+    },
+    "traffic": {
+      "vehicle_count": 0,
+      "average_speed": 0.0,
+      "congestion_level": "STALE",
+      "congestion_score": 0,
+      "stopped_vehicle_count": 0,
+      "density_veh_per_km_lane": 0.0,
+      "counts_by_class": {
+        "bicycle": 0,
+        "bus": 0,
+        "car": 0,
+        "motorcycle": 0,
+        "truck": 0
+      }
+    },
+    "system": {
+      "cpu_usage": 15,
+      "gpu_usage": 0,
+      "ram_usage": 38,
+      "temperature": 44.5,
+      "fps": 17.8
+    },
+    "pipeline_running": false,
+    "pipeline_pid": null,
+    "last_telemetry_at": "2026-10-29T17:26:17.861011",
+    "data_status": "stale"
   }
 }

@@ -4,60 +4,68 @@ He thong giam sat va phan tich giao thong bien tren nen tang **NVIDIA Jetson Nan
 
 ---
 
-## 🏛️ Cau Truc Module Chuan Muc
+## 🏛️ Cấu Trúc Dự Án (Monorepo Chuẩn Mực)
 
 ```text
-edge_traffic_optimal/
-├── RUN_GUIDE.md                    # [0] Huong dan chay he thong & toan bo arguments chi tiet
-├── run.sh                          # [1] Script khoi chay Docker container nen (hoac -it)
-├── run_ds.sh                       # [2] Script vao truc tiep interactive bash container
-├── stop.sh                         # [3] Script dung va giai phong container
-├── view_log.sh                     # [4] Script xem log thoi gian thuc cua container
-├── edge-traffic-docker.service     # [5] File cau hinh Systemd de Jetson tu chay khi bat nguon
-├── .env                            # [5] File bien moi truong cau hinh thuc te
-├── .env.example                    # [6] Mau cau hinh moi truong
-├── Dockerfile                      # [7] Container image dua tren DeepStream 6.0.1
-├── requirements.txt                # [8] Thu vien Python tuong thich
+edge-ai-web/
+├── docs/                           # TÀI LIỆU KHÓA LUẬN, KIẾN TRÚC & SỰ CỐ
+│   ├── KIEN_TRUC_HE_THONG_MICROSERVICES.md # Thuyết minh kiến trúc Microservices Polyglot
+│   ├── HUONG_DAN_VIET_KHOA_LUAN_VA_TRA_LOI_HOI_DONG.md
+│   ├── TONG_HOP_TOAN_BO_SU_CO_VA_LOI_HE_THONG.md
+│   ├── TAI_LIEU_KIEN_TRUC_VA_CHUC_NANG_WEBGIS.md
+│   ├── TAI_LIEU_KY_THUAT_CAI_TIEN_UN_TAC.md
+│   ├── HUONG_PHAT_TRIEN_AI_DU_BAO_KET_XE.md
+│   └── BAO_CAO_TIEN_DO_NGHIEN_CUU_EDGE_AI.md
 │
-├── core/                           # MODULE 1: PIPELINE & GStreamer
-│   ├── gstreamer_builder.py        # Xay dung hardware pipeline GStreamer tren NVMM
-│   └── deepstream_probe.py         # Trich xuat metadata AI va frame zero-copy
+├── core/                           # MODULE 1: PIPELINE & GSTREAMER
+│   └── gstreamer_builder.py        # Pipeline GStreamer phần cứng (NVMM, nvargus, On-demand live stream)
 │
-├── spatial/                        # MODULE 2: HINH HOC & KHONG GIAN
-│   ├── geometry_utils.py           # Thuat toan diem tiep dat (bottom-center) & Ray Casting da giac
-│   └── roi_manager.py              # Quan ly, nap va luu tru cau hinh ROI JSON
+├── spatial/                        # MODULE 2: HÌNH HỌC & KHÔNG GIAN
+│   ├── geometry_utils.py           # Điểm tiếp đất bottom-center & Ray Casting đa giác ROI
+│   └── roi_manager.py              # Nạp, lưu và chuẩn hóa tọa độ ROI JSON
 │
-├── analytics/                      # MODULE 3: PHAN TICH GIAO THONG LOI
-│   ├── presence_counter.py         # Dem luu luong theo vung hien dien (Hysteresis loc rung lac)
-│   ├── speed_estimator.py          # Do toc do thuc te qua ma tran Homography 3x3 va Hoi quy tuyen tinh
-│   └── traffic_classifier.py       # Phan loai trang thai (FREE/SLOW/CONGESTED) va Congestion Score
+├── analytics/                      # MODULE 3: PHÂN TÍCH GIAO THÔNG LÕI
+│   ├── presence_counter.py         # Đếm lưu lượng theo vùng hiện diện (Hysteresis lọc nhiễu rung)
+│   ├── speed_estimator.py          # Đo tốc độ thực tế qua Homography và Hồi quy tuyến tính
+│   ├── traffic_classifier.py       # Phân loại trạng thái (FREE/SLOW/CONGESTED) v1
+│   └── traffic_classifier_v2.py    # Thuật toán v2 cải tiến chống nhầm lẫn đèn đỏ (Dwell-time Context)
 │
-├── snapshot/                       # MODULE 4: CHUP ANH BANG CHUNG & NGOAI TUYEN
-│   ├── trigger_guard.py            # Bo kich hoat kep (15s ket xe lien tuc + 60s cooldown)
-│   ├── uploader.py                 # Ma hoa JPEG va gui HTTP multipart POST len Backend
-│   └── offline_outbox.py           # Hang doi luu dia (Disk Queue) tu retry khi mat mang (Quota 2GB)
+├── snap/                           # MODULE 4: CHỤP ẢNH BẰNG CHỨNG & NGOẠI TUYẾN
+│   ├── trigger_guard.py            # Kích hoạt kép (xác nhận ùn tắc + cooldown chống spam)
+│   ├── snapshot_service.py         # Điều phối chụp ảnh bằng chứng tự động & theo yêu cầu
+│   ├── outbox.py                   # Hàng đợi đĩa (Disk Outbox) tự động retry khi mất mạng
+│   └── runtime.py                  # Khởi tạo runtime snapshot từ biến môi trường
 │
-├── communication/                  # MODULE 5: TRUYEN THONG & DIEU KHIEN TU XA
-│   ├── mqtt_client.py              # HiveMQ TLS: Telemetry dinh ky (1s) & Heartbeat (5s)
-│   ├── command_router.py           # Nhan lenh WebGIS theo Strict Whitelist an toan
-│   └── system_metrics.py           # Thu thap % CPU, % GPU, % RAM va Nhiet do SoC Jetson
+├── communication/                  # MODULE 5: TRUYỀN THÔNG & ĐIỀU KHIỂN TỪ XA
+│   ├── mqtt_client.py              # MQTT Publisher: Telemetry (1s) & Heartbeat (5s) có LWT
+│   ├── command_router.py           # Tiếp nhận lệnh WebGIS theo Strict Whitelist an toàn
+│   └── system_metrics.py           # Giám sát % CPU, % GPU, % RAM và Nhiệt độ SoC Jetson
 │
-├── config/                         # MODULE 6: CAU HINH TAP TRUNG
-│   └── settings.py                 # Quan ly doc bien moi truong (.env) va tham so he thong
+├── config/                         # MODULE 6: CẤU HÌNH TẬP TRUNG
+│   └── settings.py                 # Nạp biến môi trường (.env) và định nghĩa hằng số hệ thống
 │
-├── tools/                          # MODULE 7: CONG CU NGOAI VI & TEST
-│   ├── roi_picker.py               # Cong cu truc quan ve da giac ROI bang chuot
-│   └── simulate_edge.py            # Bo mo phong chay thu nghiem tren may tinh
+├── configs/                        # Cấu hình DeepStream / YOLO / ROI thực địa
+│   ├── config_infer_yolo11_nano.txt # Cấu hình nvinfer YOLOv11 TensorRT
+│   ├── config_tracker_optimized.yml # Cấu hình DeepStream NvTracker tối ưu
+│   ├── labels_custom.txt           # Nhãn phân loại phương tiện
+│   └── roi_traffic_nano.json       # Tọa độ ROI và kích thước đường thực tế
 │
-├── configs/                        # Thu muc cau hinh mount ngoai host
-│   ├── config_infer_yolo11_nano.txt # Cau hinh nvinfer YOLOv11 TensorRT
-│   ├── config_tracker_optimized.yml # Cau hinh DeepStream NvTracker toi uu
-│   ├── labels_custom.txt           # Nhan phan loai phuong tien
-│   └── roi_traffic_nano.json       # Toa do ROI va kich thuoc duong thuc te
+├── webgis/                         # HỆ THỐNG GIÁM SÁT TRUNG TÂM (WEBGIS & HUB)
+│   ├── backend/                    # FastAPI Realtime Hub, SQLite History & WebSocket Manager
+│   ├── frontend/                   # React + TypeScript + Leaflet GIS Dashboard
+│   └── auth-service/               # Node.js + Prisma + SQLite IAM Service
 │
-├── outbox/                         # Thu muc chua anh chup ngoai tuyen mount ngoai host
-├── main.py                         # Diem dieu phoi trung tam (Orchestrator)
-└── tests/                          # Bo Unit Tests doc lap (45/45 tests passed)
+├── deploy/mediamtx/                # Máy chủ Streaming MediaMTX (WebRTC/RTSP/HLS)
+├── tools/                          # Bộ công cụ kiểm thử, giả lập và đóng gói triển khai
+│   ├── package_deployments.py      # Script đóng gói triển khai sạch (Jetson / WebGIS / Full)
+│   ├── simulate_edge.py            # Trình giả lập đa thiết bị Edge cho WebGIS
+│   └── roi_picker.py               # Công cụ trực quan vẽ đa giác ROI bằng chuột
+│
+├── main.py                         # Điểm điều phối trung tâm thiết bị biên (Edge Orchestrator)
+├── restart_edge.sh                 # Script khởi động an toàn trên Jetson Nano
+├── start_webgis_dev.bat            # Khởi chạy toàn bộ hệ thống WebGIS (Môi trường Dev)
+├── start_webgis_prod.bat           # Khởi chạy toàn bộ hệ thống WebGIS (Môi trường Production)
+└── tests/                          # Bộ kiểm thử tự động toàn diện (139/139 tests passed)
 ```
 
 ---
@@ -172,9 +180,9 @@ flowchart TD
 
 ---
 
-## 🧪 CHẠY KIỂM THỬ UNIT TEST
+## 🧪 CHẠY KIỂM THỬ UNIT TEST & AUDIT TOÀN DIỆN
 ```bash
-python -m pytest tests
+python -m pytest
 ```
-*Kết quả:* **77 / 77 test cases PASSED** (Bao gồm đầy đủ các module `spatial`, `analytics`, `snapshot`, `config`, `communication`, `live_stream_controller`, `traffic_classifier_v2`).
+*Kết quả:* **139 / 139 test cases PASSED** (Bao gồm đầy đủ các đợt hoàn thiện Đợt 0 $\rightarrow$ Đợt 8: `test_a1_a6_algorithm_audits`, `test_analytics`, `test_command_router_live`, `test_communication`, `test_concurrency_datastore`, `test_d1_d3_history_snapshots`, `test_d4_d8_performance_resilience`, `test_f1_f3_webgis_interface`, `test_live_stream_controller`, `test_modules`, `test_presence_counter`, `test_s1_s8_security_hardening`, `test_traffic_classifier_v2`).
 

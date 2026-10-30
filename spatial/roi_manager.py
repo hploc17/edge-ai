@@ -63,7 +63,7 @@ class RoiManager(object):
             elif len(self.analysis_roi) == 4:
                 self.perspective_points = self.analysis_roi
 
-            target_path = save_path or self.config_path or "configs/roi_config.local.json"
+            target_path = save_path or self.config_path or "configs/roi_traffic_nano.json"
             try:
                 os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
                 config_export = {

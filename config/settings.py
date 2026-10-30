@@ -28,7 +28,7 @@ if _env_path.is_file():
 OUTBOX_DIR = Path(os.getenv("OUTBOX_DIR", str(BASE_DIR / "outbox")))
 
 # Backend REST API
-BACKEND_URL = os.getenv("BACKEND_URL", "http://192.168.1.26:8000").rstrip("/")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
 EDGE_TOKEN = os.getenv("EDGE_TOKEN", "dev-edge-token")
 UPLOAD_ENDPOINT = BACKEND_URL + "/api/v1/congestion-events/snapshot"
 
@@ -37,13 +37,16 @@ EDGE_ID = os.getenv("EDGE_ID", "edge-01")
 DEVICE_NAME = os.getenv("DEVICE_NAME", "Nút giao Nguyễn Trãi - Khuất Duy Tiến")
 CAMERA_ID = os.getenv("CAMERA_ID", "camera-01")
 SEGMENT_ID = os.getenv("SEGMENT_ID", "segment-001")
-ROAD_NAME = os.getenv("ROAD_NAME", "Nguyễn Trãi")
+ROAD_NAME = os.getenv("ROAD_NAME", "Lê Đức Thọ")
 SENSOR_ID = int(os.getenv("SENSOR_ID", "0"))
 
-# Geospatial Coordinates (WGS84) & Camera Orientation
-GEO_LAT = float(os.getenv("GEO_LAT", "20.998412"))
-GEO_LNG = float(os.getenv("GEO_LNG", "105.795123"))
-GEO_ALTITUDE_M = float(os.getenv("GEO_ALTITUDE_M", "12.5"))
+# Geospatial Coordinates (WGS84) & Camera Orientation (Fix L9: NODE_* standard with GEO_* fallback)
+NODE_LAT = float(os.getenv("NODE_LAT", os.getenv("GEO_LAT", "10.852708")))
+NODE_LON = float(os.getenv("NODE_LON", os.getenv("GEO_LNG", "106.660508")))
+NODE_ALTITUDE_M = float(os.getenv("NODE_ALTITUDE_M", os.getenv("GEO_ALTITUDE_M", "12.0")))
+GEO_LAT = NODE_LAT
+GEO_LNG = NODE_LON
+GEO_ALTITUDE_M = NODE_ALTITUDE_M
 CAMERA_HEADING = float(os.getenv("CAMERA_HEADING", "45.0"))
 CAMERA_FOV = float(os.getenv("CAMERA_FOV", "65.0"))
 
@@ -76,6 +79,9 @@ TOPIC_COMMAND_RESULT = "traffic/{}/command-result".format(EDGE_ID)
 CONGESTION_CONFIRM_SECONDS = float(os.getenv("CONGESTION_CONFIRM_SECONDS", "15.0"))
 SNAPSHOT_COOLDOWN_SECONDS = float(os.getenv("SNAPSHOT_COOLDOWN_SECONDS", "60.0"))
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "75"))
+
+# AI Congestion Forecast (Tạm thời tắt trên Edge để tiết kiệm tài nguyên; quy hoạch thành Future Work tại Server)
+ENABLE_EDGE_FORECAST = os.getenv("ENABLE_EDGE_FORECAST", "0").lower() in ("1", "true", "yes")
 
 # Outbox Limits
 OUTBOX_MAX_FILES = int(os.getenv("OUTBOX_MAX_FILES", "500"))

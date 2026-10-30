@@ -12,13 +12,31 @@ const app = express();
 app.use(helmet());
 
 // 2. Cấu hình CORS
-const corsOrigins = process.env.CORS_ORIGIN
-  ? process.env.CORS_ORIGIN.split(",").map((s) => s.trim())
-  : ["http://localhost:5173", "http://localhost:8000"];
+const defaultOrigins = [
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "http://localhost:8000",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:8000",
+];
+
+const corsOriginHandler = (origin, callback) => {
+  if (!origin) return callback(null, true);
+  if (process.env.CORS_ORIGIN) {
+    const custom = process.env.CORS_ORIGIN.split(",").map((s) => s.trim());
+    if (custom.includes(origin) || custom.includes("*")) return callback(null, true);
+  }
+  if (defaultOrigins.includes(origin)) return callback(null, true);
+  if (/^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.\d+\.\d+\.\d+)(:\d+)?$/.test(origin)) {
+    return callback(null, true);
+  }
+  callback(null, false);
+};
 
 app.use(
   cors({
-    origin: corsOrigins,
+    origin: corsOriginHandler,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],

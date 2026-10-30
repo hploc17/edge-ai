@@ -22,7 +22,7 @@ def _ensure_env():
 def create_from_env(result_callback=None, analysis_source=None):
     _ensure_env()
     return SnapshotCoordinator(
-        api_url=os.getenv("BACKEND_URL", "http://192.168.1.26:8000"),
+        api_url=os.getenv("BACKEND_URL", "http://localhost:8000"),
         edge_token=os.getenv("EDGE_TOKEN", "dev-edge-token"),
         edge_id=os.getenv("EDGE_ID", "edge-01"), camera_id=os.getenv("CAMERA_ID", "camera-01"),
         segment_id=os.getenv("SEGMENT_ID", "segment-001"),

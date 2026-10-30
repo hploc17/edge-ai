@@ -25,6 +25,36 @@ from __future__ import print_function
 import json
 import os
 import threading
+import time
+
+try:
+    from communication.mqtt_client import parse_timestamp_seconds
+except ImportError:
+    try:
+        from mqtt_client import parse_timestamp_seconds
+    except ImportError:
+        def parse_timestamp_seconds(value):
+            if value is None:
+                return None
+            if isinstance(value, (int, float)):
+                return float(value)
+            val_str = str(value).strip()
+            try:
+                return float(val_str)
+            except ValueError:
+                pass
+            import re
+            import datetime
+            if val_str.endswith('Z') or val_str.endswith('z'):
+                val_str = val_str[:-1] + '+0000'
+            val_str = re.sub(r'([+-]\d{2}):(\d{2})$', r'\1\2', val_str)
+            for fmt in ('%Y-%m-%dT%H:%M:%S.%f%z', '%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S'):
+                try:
+                    dt = datetime.datetime.strptime(val_str, fmt)
+                    return dt.timestamp()
+                except ValueError:
+                    pass
+            return None
 
 ALLOWED_ACTIONS = frozenset([
     # Remote control (new)
@@ -49,6 +79,7 @@ ALLOWED_ACTIONS = frozenset([
     # Legacy compatibility
     'capture_test_snapshot',
     'restart_analytics',
+    'restart_pipeline',
     'reload_config',
     'start_video_test',
 ])
@@ -85,13 +116,18 @@ class CommandHandler(object):
         # In MQTTPublisher, set command_callback=handler.handle
     """
 
-    def __init__(self, publisher):
+    def __init__(self, publisher, dedupe_ttl=60.0, command_ttl=30.0):
         """
         publisher: MQTTPublisher instance (to send command-result)
+        dedupe_ttl: Thời gian ghi nhớ command_id đã xử lý để chống lặp (mặc định: 60s)
+        command_ttl: Thời hạn sống của lệnh (mặc định: 30s - Fix L8)
         """
         self._publisher = publisher
         self._handlers = {}
         self._lock = threading.Lock()
+        self._seen_commands = {}  # {command_id: timestamp}
+        self._dedupe_ttl = float(dedupe_ttl)
+        self._command_ttl = float(command_ttl)
 
     def register(self, action, handler_fn):
         """Register a handler function for an action.
@@ -116,6 +152,39 @@ class CommandHandler(object):
 
         action = _extract_action(data)
         command_id = _extract_command_id(data)
+
+        # ── TTL Check: Kiểm tra hạn sống của lệnh (Fix L8) ──
+        cmd_ts = data.get('timestamp')
+        ttl = float(data.get('ttl', self._command_ttl))
+        if cmd_ts is not None and parse_timestamp_seconds is not None:
+            ts_sec = parse_timestamp_seconds(cmd_ts)
+            if ts_sec is not None:
+                age = time.time() - ts_sec
+                if age > ttl:
+                    print('[CMD] Command expired (age=%.1fs > ttl=%.1fs): action=%s command_id=%s' %
+                          (age, ttl, action, command_id))
+                    self._publisher.publish_command_result(
+                        command_id=command_id,
+                        action=action or 'unknown',
+                        status='expired',
+                        message='Command expired (age=%.1fs > ttl=%.1fs)' % (age, ttl),
+                    )
+                    return
+
+        # ── Deduplication: Chống lặp lệnh trùng lặp trong 60 giây (L1) ──
+        if command_id:
+            now = time.time()
+            with self._lock:
+                # Dọn dẹp các lệnh quá hạn 60s
+                expired = [cid for cid, ts in self._seen_commands.items() if now - ts > self._dedupe_ttl]
+                for cid in expired:
+                    del self._seen_commands[cid]
+
+                if command_id in self._seen_commands:
+                    print('[CMD] Duplicate command ignored (seen %.1fs ago): action=%s command_id=%s' %
+                          (now - self._seen_commands[command_id], action, command_id))
+                    return
+                self._seen_commands[command_id] = now
 
         if not action:
             print('[CMD] Rejected: missing action/cmd field in payload')
@@ -160,11 +229,35 @@ class CommandHandler(object):
                 if action == 'get_health' and isinstance(result, dict) and hasattr(self._publisher, 'publish_device_health'):
                     self._publisher.publish_device_health(command_id=command_id, health_data=result)
 
-                msg_val = result if isinstance(result, (dict, list)) else (str(result) if result else 'OK')
+                # Chuẩn hóa status từ kết quả handler (Fix L5)
+                status = 'completed'
+                msg_val = result
+
+                if isinstance(result, dict):
+                    raw_status = str(result.get('status', '')).lower().strip()
+                    if raw_status in ('error', 'failed', 'rejected'):
+                        status = raw_status
+                    elif 'error' in result and not raw_status:
+                        status = 'error'
+                    elif raw_status in ('completed', 'success', 'ok'):
+                        status = 'completed'
+
+                    # Trích xuất message nếu là dict gọn {status, message}
+                    if 'message' in result and len(result) <= 2:
+                        msg_val = result['message']
+                elif isinstance(result, tuple) and len(result) == 2:
+                    ok, detail = result
+                    status = 'completed' if ok else 'error'
+                    msg_val = detail
+                elif isinstance(result, str):
+                    msg_val = result
+                elif result is None:
+                    msg_val = 'OK'
+
                 self._publisher.publish_command_result(
                     command_id=command_id,
                     action=action,
-                    status='completed',
+                    status=status,
                     message=msg_val,
                 )
             except Exception as err:

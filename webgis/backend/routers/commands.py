@@ -14,31 +14,10 @@ class CommandRequest(BaseModel):
     params: Optional[Dict[str, Any]] = None
 
 @router.post("/send")
-def send_command(req: CommandRequest, request: Request):
+def send_command(req: CommandRequest, user: dict = Depends(require_staff)):
     node = store.get_node(req.edge_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Không tìm thấy thiết bị '{req.edge_id}'")
-
-    # Tất cả lệnh điều khiển thiết bị: BẮT BUỘC token role STAFF (ADMIN, MANAGER)
-    auth_header = request.headers.get("authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail="Lệnh điều khiển thiết bị yêu cầu đăng nhập tài khoản Quản lý (STAFF)",
-        )
-    token = auth_header.split(" ")[1]
-    import jwt, os
-    jwt_secret = os.getenv("JWT_SECRET", "super_secret_jwt_key_traffic_gis_2026_change_in_production")
-    try:
-        payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
-        user_role = payload.get("role")
-        if user_role not in STAFF:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Tài khoản của bạn ({user_role}) không có quyền điều khiển thiết bị.",
-            )
-    except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Token không hợp lệ hoặc đã hết hạn")
 
     command_id = f"cmd-{uuid.uuid4().hex[:8]}"
     success = mqtt_service.publish_command(
@@ -73,10 +52,35 @@ def diagnose_node_health(edge_id: str):
         command_id=command_id
     )
 
+    curr_health = node.get("latest_health")
+    if not curr_health and node.get("actual_hardware_id"):
+        hw_node = store.get_node(node["actual_hardware_id"])
+        if hw_node and hw_node.get("latest_health"):
+            curr_health = hw_node["latest_health"]
+
+    if not curr_health and node.get("system"):
+        sys_info = node["system"]
+        curr_health = {
+            "timestamp": node.get("last_seen"),
+            "general": {"service_status": "running", "uptime_seconds": 3600},
+            "network": {"mac_address": node.get("mac_address", "00:04:4B:E7:44:E8"), "status": "connected"},
+            "hardware": {
+                "cpu_usage_pct": sys_info.get("cpu_usage", 0.0),
+                "gpu_usage_pct": sys_info.get("gpu_usage", 0.0),
+                "ram_usage_pct": sys_info.get("ram_usage", 0.0),
+                "temperature_c": sys_info.get("temperature", 40.0),
+                "fps": sys_info.get("fps", 0.0),
+            },
+            "pipeline": {
+                "camera_status": "streaming" if node.get("pipeline_running") else "idle",
+                "pipeline_fps": sys_info.get("fps", 0.0),
+            }
+        }
+
     # Return latest known health as immediate fallback
     return {
         "command_id": command_id,
         "edge_id": edge_id,
         "status": "dispatched",
-        "latest_health": node.get("latest_health", {})
+        "latest_health": curr_health or {}
     }

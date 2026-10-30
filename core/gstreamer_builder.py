@@ -502,7 +502,7 @@ def build_pipeline(args, source, kind, Gst):
 
     live_stream_enabled = os.getenv("LIVE_STREAM_ENABLED", "1").lower() in ("1", "true", "yes")
     print("[GSTREAMER BUILDER] Live stream config: enabled=%s, backend=%s" % (
-        live_stream_enabled, os.getenv("BACKEND_URL", "http://192.168.88.193:8000")
+        live_stream_enabled, os.getenv("BACKEND_URL", "http://localhost:8000")
     ))
 
     if live_stream_enabled:
@@ -513,15 +513,38 @@ def build_pipeline(args, source, kind, Gst):
             except Exception:
                 return default
 
+        mediamtx_host = str(os.getenv("MEDIAMTX_HOST", "localhost")).split("#")[0].strip().strip("\"'")
+        mediamtx_rtsp_port = _safe_int_env("MEDIAMTX_RTSP_PORT", 8554)
+        edge_id = str(os.getenv("EDGE_ID", "edge-01")).split("#")[0].strip().strip("\"'")
+        live_rtsp_url = str(os.getenv("LIVE_RTSP_URL", "rtsp://%s:%d/live/%s" % (mediamtx_host, mediamtx_rtsp_port, edge_id))).split("#")[0].strip().strip("\"'")
+
+        # An toàn tuyệt đối: Kiểm tra cổng máy chủ MediaMTX trước khi gắn rtspclientsink
+        # Tránh lỗi sập pipeline: gst-resource-error-quark: Could not open resource for reading and writing. (7)
+        def _check_rtsp_reachable(host, port, timeout=0.8):
+            import socket
+            try:
+                s = socket.create_connection((host, int(port)), timeout=timeout)
+                s.close()
+                return True
+            except Exception:
+                return False
+
+        if not _check_rtsp_reachable(mediamtx_host, mediamtx_rtsp_port):
+            print(
+                "[GSTREAMER BUILDER] [CẢNH BÁO] Không kết nối được máy chủ MediaMTX tại %s:%d. "
+                "Tự động bỏ qua nhánh Live Stream để tránh lỗi 'gst-resource-error-quark (7)'. "
+                "Pipeline AI chính (YOLO + Analytics + Telemetry) sẽ chạy độc lập an toàn!"
+                % (mediamtx_host, mediamtx_rtsp_port)
+            )
+            live_stream_enabled = False
+
+    if live_stream_enabled:
         live_width = _safe_int_env("LIVE_WIDTH", 640)
         live_height = _safe_int_env("LIVE_HEIGHT", 360)
         live_fps = _safe_int_env("LIVE_FPS", 15)
         live_bitrate = _safe_int_env("LIVE_BITRATE", 1500000)
-        live_idle_timeout = _safe_int_env("LIVE_IDLE_TIMEOUT_S", 0)  # 0: Chạy liên tục song song cùng AI
-        mediamtx_host = str(os.getenv("MEDIAMTX_HOST", "192.168.88.193")).split("#")[0].strip().strip("\"'")
-        mediamtx_rtsp_port = _safe_int_env("MEDIAMTX_RTSP_PORT", 8554)
-        edge_id = str(os.getenv("EDGE_ID", "edge-01")).split("#")[0].strip().strip("\"'")
-        live_rtsp_url = str(os.getenv("LIVE_RTSP_URL", "rtsp://%s:%d/live/%s" % (mediamtx_host, mediamtx_rtsp_port, edge_id))).split("#")[0].strip().strip("\"'")
+        live_idle_timeout = _safe_int_env("LIVE_IDLE_TIMEOUT_S", 60)  # Default: 60s On-Demand (Fix V1)
+        live_continuous = os.getenv("LIVE_CONTINUOUS_MODE", "0").lower() in ("1", "true", "yes")
 
         tee = _make(Gst, 'tee', 'live_tee')
         pipeline.add(tee)
@@ -530,7 +553,7 @@ def build_pipeline(args, source, kind, Gst):
         queue_disp = _make(Gst, 'queue', 'queue_disp')
         pipeline.add(queue_disp)
 
-        # Branch 2: MediaMTX H.264 Hardware Streaming (Chạy liên tục song song)
+        # Branch 2: MediaMTX H.264 Hardware Streaming
         # queue_live: leaky=2 (downstream - drop newest buffer if congested)
         queue_live = _make(Gst, 'queue', 'queue_live')
         queue_live.set_property('leaky', 2)
@@ -538,8 +561,8 @@ def build_pipeline(args, source, kind, Gst):
         queue_live.set_property('max-size-time', 0)
         queue_live.set_property('max-size-bytes', 0)
 
-        # valve: On-Demand mặc định đóng (drop=True), chỉ mở khi có client yêu cầu xem
-        initial_live_drop = True if live_idle_timeout > 0 else False
+        # valve: On-Demand mặc định đóng (drop=True), chỉ mở khi có client yêu cầu xem (Fix V1)
+        initial_live_drop = False if (live_continuous and live_idle_timeout <= 0) else True
         live_valve = _make(Gst, 'valve', 'live_valve')
         live_valve.set_property('drop', initial_live_drop)
 
@@ -600,12 +623,15 @@ def build_pipeline(args, source, kind, Gst):
             live_controller = LiveStreamController(
                 valve=live_valve,
                 encoder=enc_live,
+                sink=sink_live,
                 idle_timeout_s=live_idle_timeout,
-                rtsp_url=live_rtsp_url
+                rtsp_url=live_rtsp_url,
+                continuous_mode=live_continuous
             )
             set_global_controller(live_controller)
             pipeline.live_controller = live_controller
-            print('[GSTREAMER BUILDER] LiveStreamController integrated: valve=drop(False), target=%s' % live_rtsp_url)
+            print('[GSTREAMER BUILDER] LiveStreamController integrated: on_demand=%s, initial_valve_drop=%s, target=%s' %
+                  (not live_continuous, initial_live_drop, live_rtsp_url))
         except Exception as _ctrl_err:
             print('[GSTREAMER BUILDER] LiveStreamController initialization warning: %s' % _ctrl_err)
 

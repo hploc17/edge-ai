@@ -19,12 +19,23 @@ export interface NodeProperties {
   heading: number;
   fov: number;
   status: "online" | "offline" | "degraded";
-  traffic_status: "FREE" | "SLOW" | "CONGESTED" | "UNKNOWN";
+  traffic_status: "FREE" | "SLOW" | "CONGESTED" | "UNKNOWN" | "STALE";
+  data_status?: "live" | "stale" | "idle";
+  last_telemetry_at?: string;
   congestion_score: number;
   avg_speed_kmh: number;
   vehicle_count: number;
   marker_color: string;
   last_seen?: string;
+  id_mismatch?: boolean;
+  actual_hardware_id?: string;
+  mismatch_message?: string;
+  spatial_drift?: {
+    drift_m: number;
+    reported_coords?: number[];
+    saved_coords?: number[];
+    is_hardware_gps?: boolean;
+  };
 }
 
 export interface SegmentProperties {
@@ -35,7 +46,7 @@ export interface SegmentProperties {
   road_width_m: number;
   speed_limit_kmh: number;
   congestion_score: number;
-  traffic_status: "FREE" | "SLOW" | "CONGESTED";
+  traffic_status: "FREE" | "SLOW" | "CONGESTED" | "UNKNOWN" | "STALE";
   traffic_color: string;
   avg_speed_kmh: number;
   vehicle_count: number;

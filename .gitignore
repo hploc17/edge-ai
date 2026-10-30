@@ -51,6 +51,8 @@ traffic/snapshot_outbox*/
 webgis/backend/data/snapshots/*
 !webgis/backend/data/snapshots/.gitkeep
 webgis/backend/data/*.backup.json
+.*_trigger
+.*_preview.jpg
 
 # 6. Node.js & Frontend dependencies
 node_modules/

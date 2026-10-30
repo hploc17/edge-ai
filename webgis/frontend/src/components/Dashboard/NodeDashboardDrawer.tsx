@@ -44,8 +44,9 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
     ...(bicycleCount > 0 ? [{ value: bicycleCount, name: "Xe đạp" }] : []),
   ].filter(d => d.value > 0);
 
-  // Hiển thị placeholder nếu chưa có dữ liệu
-  const hasData = totalVehicles > 0;
+  // Hiển thị placeholder nếu chưa có dữ liệu hoặc dữ liệu stale (Fix L7)
+  const isStale = node.traffic_status === "STALE" || (node as any).data_status === "stale";
+  const hasData = totalVehicles > 0 && !isStale;
 
   // ECharts Donut Option for Vehicle Classification
   const donutOption = {
@@ -94,11 +95,19 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
   };
 
   const getStatusBadge = (status: string) => {
+    if (isStale) {
+      return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-600 border border-slate-300">MẤT DỮ LIỆU</span>;
+    }
     switch (status) {
       case "CONGESTED":
         return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300">ÙN TẮC</span>;
       case "SLOW":
         return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-amber-100 text-amber-700 border border-amber-300">ĐÔNG XE</span>;
+      case "STALE":
+        return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-600 border border-slate-300">MẤT DỮ LIỆU</span>;
+      case "UNKNOWN":
+      case "idle":
+        return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-500 border border-slate-200">CHỜ DỮ LIỆU</span>;
       default:
         return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-emerald-100 text-emerald-700 border border-emerald-300">THÔNG THOÁNG</span>;
     }
@@ -116,6 +125,11 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
           </div>
           <h2 className="text-sm font-bold text-slate-900 line-clamp-1">{node.name}</h2>
           <p className="text-xs text-slate-500 font-medium">{node.road_name || "Tuyến đường chính"}</p>
+          {isStale && (
+            <div className="mt-1 px-2 py-0.5 rounded bg-slate-100 border border-slate-300 text-[10px] text-slate-600 font-medium flex items-center gap-1">
+              <span>⚠️ Dữ liệu AI đang tạm dừng (Stale). Khởi động pipeline để cập nhật trực tiếp.</span>
+            </div>
+          )}
           {(node as any).id_mismatch && (
             <div className="mt-1 px-2 py-0.5 rounded bg-amber-50 border border-amber-200 text-[10px] text-amber-800 font-medium flex items-center gap-1">
               <span>ℹ️ Jetson ID: <strong className="font-mono">{(node as any).actual_hardware_id}</strong> (Điều khiển qua MAC)</span>

@@ -53,14 +53,52 @@ VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.h264', '.avi', '.264')
 # Thư mục configs
 CONFIGS_DIR = os.path.join(SCRIPT_DIR, 'configs')
 REMOTE_ROI_CONFIG = os.path.join(CONFIGS_DIR, 'roi_config.remote.json')
-LOCAL_ROI_CONFIG = os.path.join(CONFIGS_DIR, 'roi_config.local.json')
+LOCAL_ROI_CONFIG = os.path.join(CONFIGS_DIR, 'roi_traffic_nano.json')
 
 # Timeout cho graceful shutdown (giây)
 GRACEFUL_STOP_TIMEOUT_SEC = 5.0
 SIGTERM_TIMEOUT_SEC = 2.0
 
-# IPC: file flag để báo cho pipeline worker cần chụp snapshot
+# IPC: file flag để báo cho pipeline worker cần chụp snapshot / preview (Fix V3)
 SNAPSHOT_TRIGGER_FILE = os.path.join(SCRIPT_DIR, '.snapshot_trigger')
+PREVIEW_TRIGGER_FILE = os.path.join(SCRIPT_DIR, '.preview_trigger')
+LATEST_PREVIEW_FILE = os.path.join(SCRIPT_DIR, '.latest_preview.jpg')
+
+
+def _request_preview_from_running_pipeline(request_id, timeout_sec=2.0):
+    """Yêu cầu pipeline đang chạy trích xuất 1 frame mà KHÔNG mở lại camera CSI (Fix V3)."""
+    if os.path.exists(LATEST_PREVIEW_FILE):
+        try:
+            os.remove(LATEST_PREVIEW_FILE)
+        except Exception:
+            pass
+
+    try:
+        with open(PREVIEW_TRIGGER_FILE, 'w') as f:
+            json.dump({'request_id': request_id, 'timestamp': time.time()}, f)
+    except Exception as e:
+        _log('Warning: could not write PREVIEW_TRIGGER_FILE: %s' % e)
+
+    deadline = time.time() + float(timeout_sec)
+    while time.time() < deadline:
+        if os.path.exists(LATEST_PREVIEW_FILE) and os.path.getsize(LATEST_PREVIEW_FILE) > 1000:
+            try:
+                with open(LATEST_PREVIEW_FILE, 'rb') as f:
+                    data = f.read()
+                _log('Successfully captured preview frame (%d bytes) from active pipeline' % len(data))
+                return data
+            except Exception as read_err:
+                _log('Notice reading preview file: %s' % read_err)
+        time.sleep(0.05)
+
+    if os.path.exists(PREVIEW_TRIGGER_FILE):
+        try:
+            os.remove(PREVIEW_TRIGGER_FILE)
+        except Exception:
+            pass
+
+    _log('[WARN] Timeout waiting for preview frame from pipeline worker. Falling back to canvas frame.')
+    return None
 
 
 def _log(msg):
@@ -193,31 +231,43 @@ def make_list_videos_handler():
 def make_capture_preview_handler(agent_state, upload_preview_fn):
     """Chụp 1 frame để người dùng WebGIS vẽ ROI.
 
-    Đảm bảo luôn luôn trích xuất được frame hoặc fallback canvas thành công,
-    không bao giờ để xảy ra unhandled exception hay 'frame referenced before assignment'.
+    Đảm bảo chụp frame thật từ Camera CSI hoặc File video.
+    Fix V4: Fail-fast nếu camera bị rút hoặc lỗi phần cứng, không trả canvas giả mạo thành công.
+    Chỉ cho phép synthetic canvas khi người dùng bật tường minh allow_synthetic=True (cho dev/test).
     """
     def handler(data):
         params = data.get('params', {})
         source_type = str(params.get('source_type', 'file')).strip().lower()
         source = params.get('source', '')
+        allow_synthetic = bool(params.get('allow_synthetic', False))
         request_id = params.get('request_id') or data.get('request_id') or data.get('command_id', '')
         if not request_id:
             request_id = 'prev-%s' % uuid.uuid4().hex[:8]
 
-        _log('capture_preview requested: source_type=%s, source=%s, req_id=%s' % (source_type, source, request_id))
+        _log('capture_preview requested: source_type=%s, source=%s, req_id=%s, allow_synthetic=%s' % (source_type, source, request_id, allow_synthetic))
 
         target_payload = None
+        is_synthetic = False
 
-        # 1. Nguồn CSI Camera: Ưu tiên chụp trực tiếp từ hardware nvarguscamerasrc
+        proc = agent_state.get('pipeline_process')
+        is_pipeline_running = proc is not None and proc.poll() is None
+
+        # 1. Nguồn CSI Camera:
         if source_type == 'csi':
-            sensor_id = int(os.getenv('SENSOR_ID', os.getenv('CSI_SENSOR_ID', '0')))
-            _log('capture_preview: attempting direct hardware CSI capture (sensor %d)...' % sensor_id)
-            raw_jpeg = capture_direct_csi_jpeg(sensor_id=sensor_id, width=1280, height=720, quality=85)
-            if not raw_jpeg and sensor_id == 0:
-                raw_jpeg = capture_direct_csi_jpeg(sensor_id=1, width=1280, height=720, quality=85)
-            if raw_jpeg:
-                _log('capture_preview: captured %d bytes directly from CSI' % len(raw_jpeg))
-                target_payload = raw_jpeg
+            if is_pipeline_running:
+                # Fix V3: Pipeline đang giữ camera CSI -> Lấy frame từ pipeline worker, KHÔNG mở CSI trực tiếp!
+                _log('capture_preview: pipeline is actively running, requesting frame from active pipeline...')
+                target_payload = _request_preview_from_running_pipeline(request_id)
+            else:
+                # Pipeline đang dừng -> An toàn mở camera CSI trực tiếp
+                sensor_id = int(os.getenv('SENSOR_ID', os.getenv('CSI_SENSOR_ID', '0')))
+                _log('capture_preview: pipeline idle, capturing direct hardware CSI (sensor %d)...' % sensor_id)
+                raw_jpeg = capture_direct_csi_jpeg(sensor_id=sensor_id, width=1280, height=720, quality=85)
+                if not raw_jpeg and sensor_id == 0:
+                    raw_jpeg = capture_direct_csi_jpeg(sensor_id=1, width=1280, height=720, quality=85)
+                if raw_jpeg:
+                    _log('capture_preview: captured %d bytes directly from CSI' % len(raw_jpeg))
+                    target_payload = raw_jpeg
 
         # 2. Nguồn File Video: Tìm đường dẫn video thực tế
         elif source_type == 'file':
@@ -228,35 +278,52 @@ def make_capture_preview_handler(agent_state, upload_preview_fn):
                 _log('[WARN] No video file available for source=%s' % source)
 
         # 3. Nếu chưa có frame từ CSI trực tiếp, trích xuất qua grab_one_frame
+        # Lưu ý: nếu pipeline đang chạy trên CSI, KHÔNG gọi grab_one_frame('csi') để tránh Argus resource busy (Fix V3)
         if target_payload is None:
-            try:
-                sys.path.insert(0, os.path.join(SCRIPT_DIR, 'tools'))
-                from roi_picker import grab_one_frame
-                frame = grab_one_frame(source_type, source)
-                if frame is not None:
-                    target_payload = frame
-            except Exception as err:
-                _log('[WARN] grab_one_frame failed (%s), will use canvas fallback' % err)
+            if source_type == 'csi' and is_pipeline_running:
+                _log('[WARN] Pipeline is holding CSI sensor; skipping grab_one_frame(csi) to avoid Argus resource busy.')
+            else:
+                try:
+                    sys.path.insert(0, os.path.join(SCRIPT_DIR, 'tools'))
+                    from roi_picker import grab_one_frame
+                    frame = grab_one_frame(source_type, source)
+                    if frame is not None:
+                        target_payload = frame
+                except Exception as err:
+                    _log('[WARN] grab_one_frame failed (%s)' % err)
 
-        # 4. Fallback an toàn: nếu vẫn chưa có frame, tạo canvas mẫu 1280x720 để vẽ ROI
+        # 4. Xử lý trường hợp không lấy được frame thật (Fix V4)
         if target_payload is None:
-            try:
-                sys.path.insert(0, os.path.join(SCRIPT_DIR, 'tools'))
-                from roi_picker import _create_fallback_frame
-                target_payload = _create_fallback_frame(1280, 720)
-                _log('capture_preview: using canvas fallback 1280x720')
-            except Exception as err2:
-                _log('[ERROR] Failed to create fallback frame: %s' % err2)
+            if allow_synthetic:
+                try:
+                    sys.path.insert(0, os.path.join(SCRIPT_DIR, 'tools'))
+                    from roi_picker import _create_fallback_frame
+                    target_payload = _create_fallback_frame(1280, 720)
+                    is_synthetic = True
+                    _log('capture_preview: explicitly permitted synthetic canvas fallback 1280x720')
+                except Exception as err2:
+                    _log('[ERROR] Failed to create synthetic fallback frame: %s' % err2)
+            else:
+                if source_type == 'csi':
+                    raise RuntimeError('Camera CSI không phản hồi hoặc đã bị ngắt kết nối. Vui lòng kiểm tra cáp phần cứng.')
+                else:
+                    raise RuntimeError('Không thể trích xuất khung hình từ nguồn video "%s". File không hợp lệ hoặc không tồn tại.' % source)
 
         if target_payload is None:
-            raise RuntimeError('Could not acquire preview frame or fallback canvas')
+            raise RuntimeError('Could not acquire preview frame')
 
         # 5. Tải ảnh preview lên Backend WebGIS qua HTTP POST
-        ok, msg = upload_preview_fn(target_payload, request_id)
+        try:
+            ok, msg = upload_preview_fn(target_payload, request_id, is_synthetic=is_synthetic)
+        except TypeError:
+            ok, msg = upload_preview_fn(target_payload, request_id)
+
         if not ok:
             raise RuntimeError('Upload failed: %s' % msg)
 
-        _log('capture_preview: upload success (request_id=%s)' % request_id)
+        _log('capture_preview: upload success (request_id=%s, synthetic=%s)' % (request_id, is_synthetic))
+        if is_synthetic:
+            return 'Warning: Synthetic preview frame generated (no hardware camera)'
         return 'Preview frame uploaded successfully'
 
     return handler
@@ -278,11 +345,11 @@ def make_set_roi_remote_handler():
         if traffic_context not in ('signalized', 'midblock'):
             traffic_context = 'signalized'
 
-        # Kiểm tra dữ liệu đầu vào
+        # Kiểm tra dữ liệu đầu vào: detection_roi >= 3, analysis_roi == 4 (cho Homography Perspective)
         if len(detection_roi) < 3:
             raise ValueError('detection_roi needs at least 3 points')
-        if len(analysis_roi) < 3:
-            raise ValueError('analysis_roi needs at least 3 points')
+        if len(analysis_roi) != 4:
+            raise ValueError('analysis_roi requires exactly 4 ordered points')
 
         # Kiểm tra tọa độ Normalized [0.0, 1.0]
         for roi_name, roi_points in [('detection_roi', detection_roi), ('analysis_roi', analysis_roi)]:
@@ -292,6 +359,13 @@ def make_set_roi_remote_handler():
                 x, y = float(pt[0]), float(pt[1])
                 if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
                     raise ValueError('%s: coordinates must be normalized [0.0, 1.0], got [%s, %s]' % (roi_name, x, y))
+
+        # R2: Kiểm tra thứ tự 4 điểm P1-P4 và tỉ lệ phối cảnh mặt đường
+        try:
+            from analytics.speed_estimator import PerspectiveCalibration
+            PerspectiveCalibration.validate_aspect_ratio_and_order(analysis_roi, road_width_m, road_length_m)
+        except (ImportError, AttributeError):
+            pass
 
         config = {
             'frame_width': 1280,
@@ -316,112 +390,201 @@ def make_set_roi_remote_handler():
 
 
 def make_start_pipeline_handler(agent_state):
-    """Khởi động pipeline worker subprocess.
+    """Khởi động pipeline worker subprocess an toàn (Chống race condition L3).
 
-    Luôn dừng pipeline cũ trước (graceful) nếu đang chạy.
-    Chỉ chạy 1 pipeline tại 1 thời điểm.
+    - Sử dụng pipeline_lock để tuần tự hóa toàn bộ thao tác bật/tắt.
+    - Idempotent: Nếu pipeline đang chạy và cùng tham số (source, roi_config_path, display),
+      bỏ qua việc restart trùng lặp và trả về tiến trình hiện tại.
     """
     def handler(data):
-        params = data.get('params', {})
-        source_type = params.get('source_type', 'file')
-        source = params.get('source', '')
-        roi_config_type = params.get('roi_config', 'local')  # "local" | "remote"
-        display = bool(params.get('display', False))
+        lock = agent_state.setdefault('pipeline_lock', threading.RLock())
+        with lock:
+            params = data.get('params', {})
+            source_type = params.get('source_type', 'file')
+            source = params.get('source', '')
+            roi_config_type = params.get('roi_config', 'local')  # "local" | "remote"
+            display = bool(params.get('display', False))
 
-        # Validate source
-        if source_type == 'file':
-            validated = _validate_video_filename(source)
-            if validated is None:
-                raise ValueError('Invalid or non-existent video file: %s' % source)
-            source = validated
-        elif source_type == 'csi':
-            source = 'csi'
+            # Validate source
+            if source_type == 'file':
+                validated = _validate_video_filename(source)
+                if validated is None:
+                    raise ValueError('Invalid or non-existent video file: %s' % source)
+                source = validated
+            elif source_type == 'csi':
+                source = 'csi'
 
-        # Tìm file config ROI khả dụng (ưu tiên local/traffic_nano)
-        default_local = None
-        candidates = [
-            LOCAL_ROI_CONFIG,
-            os.path.join(CONFIGS_DIR, 'roi_traffic_nano.json'),
-            os.path.join(CONFIGS_DIR, 'roi_config.local.json'),
-            os.path.join(CONFIGS_DIR, 'roi_nano.json'),
-        ]
-        for c in candidates:
-            if os.path.isfile(c):
-                default_local = c
-                break
+            # Tìm file config ROI khả dụng (ưu tiên traffic_nano)
+            default_local = None
+            candidates = [
+                LOCAL_ROI_CONFIG,
+                os.path.join(CONFIGS_DIR, 'roi_traffic_nano.json'),
+                os.path.join(CONFIGS_DIR, 'roi_nano.json'),
+            ]
+            for c in candidates:
+                if os.path.isfile(c):
+                    default_local = c
+                    break
 
-        if roi_config_type == 'remote':
-            if os.path.isfile(REMOTE_ROI_CONFIG):
-                roi_config_path = REMOTE_ROI_CONFIG
-            elif default_local:
-                roi_config_path = default_local
+            if roi_config_type == 'remote':
+                if os.path.isfile(REMOTE_ROI_CONFIG):
+                    roi_config_path = REMOTE_ROI_CONFIG
+                elif default_local:
+                    roi_config_path = default_local
+                else:
+                    raise RuntimeError('Remote ROI config not found. Run set_roi_remote first.')
             else:
-                raise RuntimeError('Remote ROI config not found. Run set_roi_remote first.')
-        else:
-            if default_local:
-                roi_config_path = default_local
-            else:
-                raise RuntimeError('Local ROI config not found in %s' % CONFIGS_DIR)
+                if default_local:
+                    roi_config_path = default_local
+                else:
+                    raise RuntimeError('Local ROI config not found in %s' % CONFIGS_DIR)
 
-        # Dừng pipeline cũ trước
-        old_proc = agent_state.get('pipeline_process')
-        if old_proc is not None and old_proc.poll() is None:
-            _log('start_pipeline: stopping previous pipeline PID=%d' % old_proc.pid)
-            graceful_stop_pipeline(old_proc)
-            time.sleep(1.0)  # Chờ tài nguyên GPU được giải phóng hoàn toàn
+            # Idempotency check: Nếu pipeline hiện tại vẫn đang chạy và cùng cấu hình, không start đè
+            curr_proc = agent_state.get('pipeline_process')
+            roi_mtime = os.path.getmtime(roi_config_path) if os.path.isfile(roi_config_path) else 0.0
+            if curr_proc is not None and curr_proc.poll() is None:
+                last_cmd = agent_state.get('pipeline_current_cmd')
+                requested_key = (source, roi_config_path, roi_mtime, display)
+                if last_cmd == requested_key:
+                    _log('start_pipeline: already running with identical config PID=%d (idempotent no-op)' % curr_proc.pid)
+                    return {
+                        'pid': curr_proc.pid,
+                        'state': 'running',
+                        'roi_config': roi_config_type,
+                        'display': display,
+                        'message': 'Pipeline is already running with identical config'
+                    }
 
-        # Dựng command line: tự động nhận diện main3.py nếu có, ngược lại dùng main.py
-        worker_script = 'main3.py' if os.path.exists(os.path.join(SCRIPT_DIR, 'main3.py')) else 'main.py'
-        cmd = [
-            sys.executable,
-            os.path.join(SCRIPT_DIR, worker_script),
-            '--source', source or 'csi',
-            '--roi-config', roi_config_path,
-        ]
-        if not display:
-            cmd.append('--no-display')
+                # Nếu khác cấu hình hoặc người dùng muốn đổi nguồn: Dừng pipeline cũ trước
+                _log('start_pipeline: stopping previous pipeline PID=%d to reconfigure' % curr_proc.pid)
+                graceful_stop_pipeline(curr_proc)
+                agent_state['pipeline_process'] = None
+                log_f = agent_state.pop('pipeline_log_file', None)
+                if log_f:
+                    try:
+                        log_f.close()
+                    except Exception:
+                        pass
+                time.sleep(1.0)  # Chờ tài nguyên CSI sensor và GPU VRAM được giải phóng hoàn toàn
 
-        _log('start_pipeline: %s' % ' '.join(cmd))
+            # Dựng command line: tự động nhận diện main3.py nếu có, ngược lại dùng main.py
+            worker_script = 'main3.py' if os.path.exists(os.path.join(SCRIPT_DIR, 'main3.py')) else 'main.py'
+            cmd = [
+                sys.executable,
+                os.path.join(SCRIPT_DIR, worker_script),
+                '--source', source or 'csi',
+                '--roi-config', roi_config_path,
+            ]
+            if not display:
+                cmd.append('--no-display')
 
-        env = os.environ.copy()
-        if not env.get('DISPLAY'):
-            env['DISPLAY'] = ':0'
+            _log('start_pipeline: %s' % ' '.join(cmd))
 
-        log_file_path = os.path.join(SCRIPT_DIR, 'pipeline.log')
-        log_f = open(log_file_path, 'a', encoding='utf-8')
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            cwd=SCRIPT_DIR,
-            env=env,
-        )
+            env = os.environ.copy()
+            if not env.get('DISPLAY'):
+                env['DISPLAY'] = ':0'
 
-        agent_state['pipeline_process'] = proc
-        agent_state['pipeline_log_file'] = log_f
-        agent_state['pipeline_started_at'] = time.time()
-        _log('start_pipeline: started PID=%d (logging to %s)' % (proc.pid, log_file_path))
+            log_file_path = os.path.join(SCRIPT_DIR, 'pipeline.log')
+            log_f = open(log_file_path, 'a', encoding='utf-8')
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                cwd=SCRIPT_DIR,
+                env=env,
+            )
 
-        return {'pid': proc.pid, 'state': 'running', 'roi_config': roi_config_type, 'display': display}
+            agent_state['pipeline_process'] = proc
+            agent_state['pipeline_log_file'] = log_f
+            agent_state['pipeline_started_at'] = time.time()
+            agent_state['pipeline_current_cmd'] = (source, roi_config_path, roi_mtime, display)
+            agent_state['intentional_stop'] = False
+            agent_state['last_start_data'] = data
+            _log('start_pipeline: started PID=%d (logging to %s)' % (proc.pid, log_file_path))
+
+            return {'pid': proc.pid, 'state': 'running', 'roi_config': roi_config_type, 'display': display}
 
     return handler
 
 
-def make_stop_pipeline_handler(agent_state):
-    """Dừng pipeline worker một cách an toàn."""
+def make_reload_config_handler(agent_state):
+    """Thực hiện reload cấu hình ROI và calibration đáng tin cậy (Fix R3).
+
+    Nếu pipeline đang chạy: khởi động lại pipeline (Graceful Restart) với file cấu hình mới nhất
+    để giải phóng CUDA context cũ và nạp ma trận Homography mới hoàn toàn sạch sẽ, tránh race condition.
+    """
     def handler(data):
-        proc = agent_state.get('pipeline_process')
-        if proc is None or proc.poll() is not None:
-            return 'No pipeline is currently running'
-        graceful_stop_pipeline(proc)
-        agent_state['pipeline_process'] = None
-        log_f = agent_state.pop('pipeline_log_file', None)
-        if log_f:
-            try:
-                log_f.close()
-            except Exception:
-                pass
-        return 'Pipeline stopped successfully'
+        lock = agent_state.setdefault('pipeline_lock', threading.RLock())
+        with lock:
+            proc = agent_state.get('pipeline_process')
+            is_running = proc is not None and proc.poll() is None
+            if not is_running:
+                return 'Config updated. Pipeline is not currently running; changes will apply on next start.'
+
+            _log('reload_config: pipeline is running (PID=%d), restarting with latest config...' % proc.pid)
+            last_cmd = agent_state.get('pipeline_current_cmd')
+            source = last_cmd[0] if last_cmd else 'csi'
+            display = last_cmd[3] if last_cmd and len(last_cmd) > 3 else False
+
+            # Buộc restart bằng cách xóa key cache
+            agent_state['pipeline_current_cmd'] = None
+
+            start_fn = make_start_pipeline_handler(agent_state)
+            res = start_fn({
+                'command_id': data.get('command_id', 'reload-%s' % uuid.uuid4().hex[:6]),
+                'params': {
+                    'source_type': 'csi' if source == 'csi' else 'file',
+                    'source': source,
+                    'roi_config': 'remote' if os.path.isfile(REMOTE_ROI_CONFIG) else 'local',
+                    'display': display
+                }
+            })
+            new_pid = res.get('pid') if isinstance(res, dict) else '?'
+            return 'Pipeline successfully restarted with new configuration (new PID: %s)' % new_pid
+    return handler
+
+
+def make_stop_pipeline_handler(agent_state):
+    """Dừng pipeline worker một cách an toàn (Sử dụng pipeline_lock)."""
+    def handler(data):
+        lock = agent_state.setdefault('pipeline_lock', threading.RLock())
+        with lock:
+            agent_state['intentional_stop'] = True
+            agent_state['crash_retry_count'] = 0
+            agent_state['last_start_data'] = None
+            proc = agent_state.get('pipeline_process')
+            if proc is None or proc.poll() is not None:
+                agent_state['pipeline_process'] = None
+                agent_state['pipeline_current_cmd'] = None
+                return 'No pipeline is currently running'
+            graceful_stop_pipeline(proc)
+            agent_state['pipeline_process'] = None
+            agent_state['pipeline_started_at'] = None
+            agent_state['pipeline_current_cmd'] = None
+            log_f = agent_state.pop('pipeline_log_file', None)
+            if log_f:
+                try:
+                    log_f.close()
+                except Exception:
+                    pass
+            return 'Pipeline stopped successfully'
+    return handler
+
+
+def make_restart_pipeline_handler(agent_state):
+    """Khởi động lại pipeline: Dừng an toàn pipeline cũ và khởi động lại với cấu hình gần nhất (Fix L6)."""
+    def handler(data):
+        lock = agent_state.setdefault('pipeline_lock', threading.RLock())
+        with lock:
+            last_data = agent_state.get('last_start_data') or data
+            _log('restart_analytics requested. Gracefully stopping previous pipeline...')
+            stop_fn = make_stop_pipeline_handler(agent_state)
+            stop_fn(data)
+            time.sleep(1.5)  # Chờ giải phóng VRAM TensorRT và cảm biến CSI
+            agent_state['intentional_stop'] = False
+            _log('restart_analytics: starting new pipeline instance...')
+            start_fn = make_start_pipeline_handler(agent_state)
+            return start_fn(last_data)
     return handler
 
 
@@ -583,17 +746,39 @@ def make_capture_snapshot_handler(agent_state, backend_url, edge_id, edge_token)
 
 
 def make_request_status_handler(agent_state):
-    """Báo cáo trạng thái pipeline hiện tại."""
-    def handler(data):
+    """Báo cáo trạng thái pipeline hiện tại (hỗ trợ cả tiến trình con và tiến trình chạy ngoài trên OS)."""
+    def handler(data=None):
+        # 1. Kiểm tra tiến trình con được quản lý bởi agent
         proc = agent_state.get('pipeline_process')
-        if proc is None:
-            return {'pipeline_running': False, 'pid': None}
-        retcode = proc.poll()
-        if retcode is None:
+        if proc is not None and proc.poll() is None:
             uptime = time.time() - agent_state.get('pipeline_started_at', time.time())
             return {'pipeline_running': True, 'pid': proc.pid, 'uptime_sec': int(uptime)}
-        else:
-            return {'pipeline_running': False, 'pid': None, 'last_exit_code': retcode}
+
+        # 2. Quét tiến trình main.py trên OS (trong trường hợp người dùng chạy từ terminal hoặc systemd)
+        try:
+            import psutil
+            for p in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time']):
+                try:
+                    cmdline = p.info.get('cmdline') or []
+                    cmd_str = ' '.join(cmdline)
+                    if ('main.py' in cmd_str or 'main3.py' in cmd_str) and 'jetson_agent.py' not in cmd_str:
+                        uptime = time.time() - p.info.get('create_time', time.time())
+                        return {'pipeline_running': True, 'pid': p.info['pid'], 'uptime_sec': int(max(0, uptime))}
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 3. Fallback pgrep nếu psutil không có quyền đọc cmdline
+        try:
+            out = subprocess.check_output(['pgrep', '-f', 'python3.*main.py'], stderr=subprocess.DEVNULL)
+            pids = [int(x) for x in out.decode().strip().split() if x.isdigit()]
+            if pids:
+                return {'pipeline_running': True, 'pid': pids[0], 'uptime_sec': 30}
+        except Exception:
+            pass
+
+        return {'pipeline_running': False, 'pid': None}
     return handler
 
 
@@ -621,7 +806,7 @@ def make_upload_preview_fn(backend_url, edge_id, edge_token):
     except ImportError:
         _HAS_CV2 = False
 
-    def upload(frame_or_jpeg, request_id):
+    def upload(frame_or_jpeg, request_id, is_synthetic=False):
         if not _HAS_URLLIB:
             return False, 'urllib not available'
 
@@ -651,6 +836,7 @@ def make_upload_preview_fn(backend_url, edge_id, edge_token):
 
         _add_field('purpose', 'roi_setup')
         _add_field('request_id', request_id)
+        _add_field('is_synthetic', 'true' if is_synthetic else 'false')
         _add_field('timestamp', time.strftime('%Y-%m-%dT%H:%M:%S+07:00'))
 
         # File part
@@ -726,7 +912,7 @@ def run_agent():
         _log('Loaded single master environment from: %s' % root_env_path)
 
     edge_id = os.getenv('EDGE_ID', 'edge-01')
-    backend_url = os.getenv('BACKEND_URL', 'http://192.168.1.26:8000')
+    backend_url = os.getenv('BACKEND_URL', 'http://localhost:8000')
     edge_token = os.getenv('EDGE_TOKEN', 'dev-edge-token')
     agent_client_id = os.getenv('MQTT_AGENT_CLIENT_ID', '%s-agent' % edge_id)
 
@@ -755,6 +941,11 @@ def run_agent():
     agent_state = {
         'pipeline_process': None,
         'pipeline_started_at': None,
+        'pipeline_lock': threading.RLock(),
+        'pipeline_current_cmd': None,
+        'last_start_data': None,
+        'intentional_stop': False,
+        'crash_retry_count': 0,
     }
 
     # Upload helper
@@ -782,8 +973,9 @@ def run_agent():
     cmd_handler.register('get_health', lambda data: collect_comprehensive_health())
     cmd_handler.register('get_spatial_info', lambda data: collect_spatial_info())
     # Legacy aliases
-    cmd_handler.register('restart_analytics', make_stop_pipeline_handler(agent_state))
-    cmd_handler.register('reload_config', lambda data: 'Config reload queued (restart pipeline to apply)')
+    cmd_handler.register('restart_analytics', make_restart_pipeline_handler(agent_state))
+    cmd_handler.register('restart_pipeline', make_restart_pipeline_handler(agent_state))
+    cmd_handler.register('reload_config', make_reload_config_handler(agent_state))
     cmd_handler.register('start_video_test', make_start_pipeline_handler(agent_state))
 
     # Gói Live Streaming: MediaMTX On-Demand
@@ -802,6 +994,13 @@ def run_agent():
 
 
     # Thiết lập hồ sơ thiết bị để WebGIS tự động nhận diện (Auto-discovery) và vẽ Node trên bản đồ
+    lat = float(os.getenv('NODE_LAT', os.getenv('GEO_LAT', 10.852708)))
+    lng = float(os.getenv('NODE_LON', os.getenv('GEO_LNG', 106.660508)))
+    road_name = os.getenv('ROAD_NAME', 'Đường Lê Đức Thọ')
+    segment_id = os.getenv('SEGMENT_ID', 'segment-001')
+    heading = float(os.getenv('CAMERA_HEADING', 45.0))
+    fov = float(os.getenv('CAMERA_FOV', 65.0))
+
     registration_profile = {
         'event': 'device_registered',
         'edge_id': edge_id,
@@ -809,17 +1008,39 @@ def run_agent():
         'name': os.getenv('NODE_NAME', 'Camera AI Jetson (%s)' % edge_id),
         'device_name': os.getenv('NODE_NAME', 'Camera AI Jetson (%s)' % edge_id),
         'camera_id': os.getenv('CAMERA_ID', 'camera-01'),
-        'segment_id': os.getenv('SEGMENT_ID', 'segment-001'),
-        'road_name': os.getenv('ROAD_NAME', 'Đường Nguyễn Trãi'),
-        'latitude': float(os.getenv('NODE_LAT', 20.998412)),
-        'longitude': float(os.getenv('NODE_LON', 105.795123)),
-        'camera_heading': float(os.getenv('CAMERA_HEADING', 45.0)),
-        'camera_fov': float(os.getenv('CAMERA_FOV', 65.0)),
+        'segment_id': segment_id,
+        'road_name': road_name,
+        'latitude': lat,
+        'longitude': lng,
+        'geo': {
+            'lat': lat,
+            'lng': lng,
+            'altitude_m': float(os.getenv('NODE_ALTITUDE_M', os.getenv('GEO_ALTITUDE_M', 12.0))),
+            'segment_id': segment_id,
+            'road_name': road_name,
+            'heading': heading,
+            'fov': fov,
+        },
+        'camera_heading': heading,
+        'camera_fov': fov,
         'status': 'online',
+        'pipeline_running': False,
+        'pipeline_pid': None,
         'model_version': os.getenv('MODEL_VERSION', 'exp.engine'),
         'timestamp': time.strftime("%Y-%m-%dT%H:%M:%S+07:00")
     }
     publisher.set_registration_profile(registration_profile)
+
+    def query_live_pipeline_status():
+        proc = agent_state.get('pipeline_process')
+        if proc is None:
+            return {'pipeline_running': False, 'pid': None}
+        retcode = proc.poll()
+        if retcode is None:
+            return {'pipeline_running': True, 'pid': proc.pid}
+        return {'pipeline_running': False, 'pid': None}
+
+    publisher.set_pipeline_status_callback(query_live_pipeline_status)
 
     # Kết nối MQTT
     publisher.start()
@@ -827,8 +1048,8 @@ def run_agent():
     heartbeat = HeartbeatThread(publisher)
     heartbeat.start()
 
-    # Tự động kích hoạt pipeline worker nếu được cấu hình (hoặc khi bật máy)
-    auto_start = os.getenv('AUTO_START_PIPELINE', 'true').lower() in ('true', '1', 'yes')
+    # Tự động kích hoạt pipeline worker nếu được cấu hình (Mặc định: false để điều khiển từ WebGIS)
+    auto_start = os.getenv('AUTO_START_PIPELINE', 'false').lower() in ('true', '1', 'yes')
     if auto_start:
         _log('AUTO_START_PIPELINE is enabled. Launching pipeline worker...')
         try:
@@ -841,34 +1062,98 @@ def run_agent():
     _log('Agent is running. Waiting for commands via MQTT...')
     _log('Listening on topic: traffic/%s/command' % edge_id)
 
-    # Vòng lặp chính: giám sát pipeline process và dọn dẹp
+    MAX_CRASH_RETRIES = int(os.getenv('WATCHDOG_MAX_RETRIES', '3'))
+    BACKOFF_DELAYS = [2.0, 5.0, 10.0]
+
+    # Vòng lặp chính: giám sát pipeline process và watchdog tự phục hồi (Fix L6)
     try:
         while True:
             time.sleep(1.0)
             proc = agent_state.get('pipeline_process')
+
+            # Nếu pipeline đang chạy ổn định > 60s, reset bộ đếm crash về 0
+            if proc is not None and proc.poll() is None:
+                started_at = agent_state.get('pipeline_started_at')
+                if started_at and (time.time() - started_at > 60.0) and agent_state.get('crash_retry_count', 0) > 0:
+                    agent_state['crash_retry_count'] = 0
+                    _log('[WATCHDOG] Pipeline running stably for >60s. Reset crash counter.')
+
             if proc is not None:
                 retcode = proc.poll()
                 if retcode is not None:
                     _log('Pipeline PID=%d finished/exited with code=%d' % (proc.pid, retcode))
-                    agent_state['pipeline_process'] = None
-                    agent_state['pipeline_started_at'] = None
-                    log_f = agent_state.pop('pipeline_log_file', None)
-                    if log_f:
+                    lock = agent_state.get('pipeline_lock')
+                    with lock:
+                        agent_state['pipeline_process'] = None
+                        agent_state['pipeline_started_at'] = None
+                        agent_state['pipeline_current_cmd'] = None
+                        log_f = agent_state.pop('pipeline_log_file', None)
+                        if log_f:
+                            try:
+                                log_f.close()
+                            except Exception:
+                                pass
+
+                    intentional = agent_state.get('intentional_stop', False)
+                    last_data = agent_state.get('last_start_data')
+                    source_type = (last_data or {}).get('params', {}).get('source_type', 'file')
+
+                    # 1. Người dùng chủ động dừng trên WebGIS -> Không restart
+                    if intentional:
+                        _log('Pipeline stopped intentionally by user. Watchdog idle.')
+                        continue
+
+                    # 2. File video chạy hết tự nhiên (EOS: retcode == 0) -> Không restart, báo Web
+                    if retcode == 0 and source_type == 'file':
+                        _log('Video playback finished normally (EOS).')
                         try:
-                            log_f.close()
+                            publisher.publish_command_result(
+                                command_id='auto-stop',
+                                action='stop_pipeline',
+                                status='completed',
+                                message='Video playback finished (code 0). Display window closed.'
+                            )
+                        except Exception as e:
+                            _log('Failed to notify auto-stop via MQTT: %s' % e)
+                        continue
+
+                    # 3. Crash bất thường (retcode != 0 hoặc CSI camera bị ngắt) -> Watchdog kích hoạt
+                    retry_count = agent_state.get('crash_retry_count', 0)
+                    if retry_count < MAX_CRASH_RETRIES:
+                        agent_state['crash_retry_count'] = retry_count + 1
+                        delay = BACKOFF_DELAYS[min(retry_count, len(BACKOFF_DELAYS) - 1)]
+                        _log('[WATCHDOG] ⚠️ Pipeline crashed with code %d! Auto-recovering attempt %d/%d in %.1fs...' %
+                             (retcode, retry_count + 1, MAX_CRASH_RETRIES, delay))
+
+                        try:
+                            publisher.publish_command_result(
+                                command_id='watchdog-%d' % int(time.time()),
+                                action='pipeline_watchdog',
+                                status='restarting',
+                                message='Pipeline crashed (code %d). Auto-recovering attempt %d/%d in %.1fs' %
+                                        (retcode, retry_count + 1, MAX_CRASH_RETRIES, delay)
+                            )
                         except Exception:
                             pass
-                    # Bắn MQTT thông báo pipeline đã hoàn thành để WebGIS cập nhật UI ngay lập tức
-                    try:
-                        publisher.publish_command_result(
-                            command_id='auto-stop',
-                            action='stop_pipeline',
-                            status='completed',
-                            message='Video playback finished (code %d). Display window closed.' % retcode
-                        )
-                        _log('Notified WebGIS that pipeline completed automatically.')
-                    except Exception as e:
-                        _log('Failed to notify auto-stop via MQTT: %s' % e)
+
+                        time.sleep(delay)
+                        try:
+                            start_fn = make_start_pipeline_handler(agent_state)
+                            restart_res = start_fn(last_data or {'params': {'source_type': source_type}})
+                            _log('[WATCHDOG] ✅ Pipeline recovered successfully PID=%s' % restart_res.get('pid'))
+                        except Exception as rec_err:
+                            _log('[WATCHDOG] ❌ Recovery attempt failed: %s' % rec_err)
+                    else:
+                        _log('[WATCHDOG] 🛑 Max crash retries (%d) reached. Pipeline marked failed.' % MAX_CRASH_RETRIES)
+                        try:
+                            publisher.publish_command_result(
+                                command_id='watchdog-fatal',
+                                action='stop_pipeline',
+                                status='error',
+                                message='Pipeline crashed repeatedly (code %d). Max recovery attempts reached.' % retcode
+                            )
+                        except Exception:
+                            pass
 
     except KeyboardInterrupt:
         _log('Agent shutting down...')

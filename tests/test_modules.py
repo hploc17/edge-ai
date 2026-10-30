@@ -11,7 +11,7 @@ from spatial.roi_manager import RoiManager
 from analytics.presence_counter import RoiPresenceCounter
 from analytics.speed_estimator import PerspectiveCalibration, StreamTimestamp, TrackSpeedEstimator
 from analytics.traffic_classifier import TrafficStateModel
-from snapshot.trigger_guard import SnapshotTrigger
+from snap.trigger_guard import SnapshotTrigger
 from config.settings import FRAME_WIDTH, FRAME_HEIGHT, CONGESTION_CONFIRM_SECONDS
 
 

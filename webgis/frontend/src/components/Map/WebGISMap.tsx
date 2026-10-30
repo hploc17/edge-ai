@@ -458,7 +458,8 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
         map.on("click", "traffic-segments-core", (e) => {
           if (isPickingLocationRef.current || !e.features || !e.features[0]) return;
           const p = e.features[0].properties as any;
-          const statusText = p.traffic_status === "CONGESTED" ? "ÙN TẮC" : (p.traffic_status === "SLOW" ? "ĐÔNG XE" : "THÔNG THOÁNG");
+          const statusText = p.traffic_status === "CONGESTED" ? "ÙN TẮC" : (p.traffic_status === "SLOW" ? "ĐÔNG XE" : (p.traffic_status === "STALE" ? "MẤT DỮ LIỆU" : "THÔNG THOÁNG"));
+          const badgeColor = p.traffic_status === "STALE" ? "#64748b" : (p.traffic_color || "#10b981");
           
           // Close existing popup if any
           if (activePopupRef.current) {
@@ -472,7 +473,7 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
               <div style="font-family: Inter, sans-serif; padding: 6px 4px; color: #1e293b; min-width: 230px;">
                 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px;">
                   <strong style="font-size: 13px; color: #0f172a;">${p.road_name}</strong>
-                  <span style="font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 6px; background: ${p.traffic_color}25; color: ${p.traffic_color};">
+                  <span style="font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 6px; background: ${badgeColor}25; color: ${badgeColor};">
                     ${statusText}
                   </span>
                 </div>
@@ -689,7 +690,7 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
         existingEntry.element.style.zIndex = isSelected ? "50" : "10";
         existingEntry.element.style.setProperty("--marker-glow-color", props.marker_color);
 
-        const isAiRunning = props.status === "online" || (props.vehicle_count !== undefined && props.vehicle_count !== null);
+        const isAiRunning = Boolean(props.pipeline_running || (props.vehicle_count !== undefined && props.vehicle_count > 0));
         existingEntry.element.dataset.aiRunning = isAiRunning ? "true" : "false";
 
         existingEntry.ring.style.backgroundColor = props.marker_color;
@@ -798,7 +799,7 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
           el.appendChild(cone);
         }
 
-        const isAiRunning = props.status === "online" || (props.vehicle_count !== undefined && props.vehicle_count !== null);
+        const isAiRunning = Boolean(props.pipeline_running || (props.vehicle_count !== undefined && props.vehicle_count > 0));
         el.dataset.aiRunning = isAiRunning ? "true" : "false";
 
         // Click handler: Mở drawer
@@ -813,11 +814,6 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
         el.addEventListener("mouseenter", () => {
           if (isPickingLocationRef.current) return;
 
-          // QUAN TRỌNG: Chưa chạy AI (chưa ROI / offline) -> Hover hoàn toàn KHÔNG CÓ GÌ, camera tự do setup ROI
-          if (el.dataset.aiRunning !== "true") {
-            return;
-          }
-
           if (hoverTimerRef.current !== null) {
             window.clearTimeout(hoverTimerRef.current);
           }
@@ -827,34 +823,63 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
             closeHoverStream();
 
             currentHoverEdgeIdRef.current = edgeId;
-
-            // Host MediaMTX: suy ra từ domain hiện tại của trình duyệt hoặc IP mạng LAN
-            const streamHost = window.location.hostname || "192.168.88.193";
-            const webrtcUrl = `http://${streamHost}:8889/live/${edgeId}/`;
+            const isRunning = el.dataset.aiRunning === "true";
 
             const popupContainer = document.createElement("div");
             popupContainer.className = "camera-live-box";
-            popupContainer.innerHTML = `
-              <div class="camera-live-header">
-                <div class="camera-live-title">
-                  <span class="camera-live-dot"></span>
-                  <span>LIVE CAMERA CSI (AI DETECTION)</span>
+
+            if (isRunning) {
+              // Host MediaMTX: suy ra từ domain hiện tại của trình duyệt hoặc IP mạng LAN
+              const streamHost = window.location.hostname || "localhost";
+              const webrtcUrl = `http://${streamHost}:8889/live/${edgeId}/`;
+
+              popupContainer.innerHTML = `
+                <div class="camera-live-header">
+                  <div class="camera-live-title">
+                    <span class="camera-live-dot"></span>
+                    <span>LIVE CAMERA CSI (AI DETECTION)</span>
+                  </div>
+                  <span class="camera-live-edge">${props.name || edgeId}</span>
                 </div>
-                <span class="camera-live-edge">${props.name || edgeId}</span>
-              </div>
-              <div class="camera-live-media" id="live-stream-media-${edgeId}">
-                <iframe
-                  src="${webrtcUrl}"
-                  allow="autoplay; fullscreen"
-                  style="width: 100%; height: 100%; border: 0; pointer-events: none;"
-                  title="Camera Live Stream"
-                ></iframe>
-              </div>
-              <div class="camera-live-footer">
-                <span>MediaMTX WebRTC (Tức thì 0ms)</span>
-                <span>Rời chuột để tắt</span>
-              </div>
-            `;
+                <div class="camera-live-media" id="live-stream-media-${edgeId}">
+                  <iframe
+                    src="${webrtcUrl}"
+                    allow="autoplay; fullscreen"
+                    style="width: 100%; height: 100%; border: 0; pointer-events: none;"
+                    title="Camera Live Stream"
+                  ></iframe>
+                </div>
+                <div class="camera-live-footer">
+                  <span>MediaMTX WebRTC (Tức thì 0ms)</span>
+                  <span>Rời chuột để tắt</span>
+                </div>
+              `;
+            } else {
+              popupContainer.innerHTML = `
+                <div class="camera-live-header" style="background: #1e293b;">
+                  <div class="camera-live-title" style="color: #cbd5e1;">
+                    <span class="camera-live-dot" style="background-color: #f59e0b; box-shadow: 0 0 8px #f59e0b;"></span>
+                    <span>CAMERA ĐANG CHỜ</span>
+                  </div>
+                  <span class="camera-live-edge">${props.name || edgeId}</span>
+                </div>
+                <div class="camera-live-media" style="display: flex; flex-direction: column; align-items: center; justify-content: center; background: #0f172a; padding: 24px 16px; text-align: center; color: #94a3b8; min-height: 180px;">
+                  <div style="width: 44px; height: 44px; border-radius: 50%; background: rgba(245, 158, 11, 0.15); display: flex; align-items: center; justify-content: center; margin-bottom: 10px; color: #f59e0b; font-size: 22px;">
+                    📷
+                  </div>
+                  <div style="font-weight: 700; font-size: 13px; color: #f1f5f9; margin-bottom: 4px;">
+                    Hiện tại camera chưa bật
+                  </div>
+                  <div style="font-size: 11px; line-height: 1.4; color: #94a3b8; max-width: 260px;">
+                    Nhấp vào camera để mở Bảng điều khiển và kích hoạt AI Pipeline
+                  </div>
+                </div>
+                <div class="camera-live-footer" style="background: #1e293b; border-top: 1px solid #334155;">
+                  <span style="color: #f59e0b; font-weight: 600;">● Chế độ chờ (Standby)</span>
+                  <span>Rời chuột để tắt</span>
+                </div>
+              `;
+            }
 
             const popup = new maplibregl.Popup({
               closeButton: false,

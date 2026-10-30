@@ -50,3 +50,4 @@ class SnapshotTrigger(object):
     def reset_cooldown(self):
         """Allow immediate snapshot on demand."""
         self._last_snapshot_time = -self._cooldown_s
+

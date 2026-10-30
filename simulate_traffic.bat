@@ -8,5 +8,5 @@ echo.
 echo Đang kết nối HiveMQ Cloud MQTT và phát dữ liệu xe ảo về WebGIS...
 echo Nhấn Ctrl+C để dừng mô phỏng.
 echo ==============================================================================
-python "%~dp0webgis\tools\simulate_edge.py"
+python "%~dp0tools\simulate_edge.py" %*
 pause

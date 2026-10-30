@@ -429,14 +429,14 @@ class TestTrafficAnalyzer:
 class TestSnapshotTrigger:
 
     def test_no_snapshot_when_not_congested(self):
-        from snapshot.trigger_guard import SnapshotTrigger
+        from snap.trigger_guard import SnapshotTrigger
         trigger = SnapshotTrigger(congestion_confirm_seconds=15.0, cooldown_seconds=60.0)
         assert not trigger.check('FREE', now=0.0)
         assert not trigger.check('SLOW', now=1.0)
         assert not trigger.check('UNKNOWN', now=2.0)
 
     def test_snapshot_after_15_seconds_congested(self):
-        from snapshot.trigger_guard import SnapshotTrigger
+        from snap.trigger_guard import SnapshotTrigger
         trigger = SnapshotTrigger(congestion_confirm_seconds=15.0, cooldown_seconds=60.0)
         # First 14 seconds — not triggered
         assert not trigger.check('CONGESTED', now=0.0)
@@ -445,7 +445,7 @@ class TestSnapshotTrigger:
         assert trigger.check('CONGESTED', now=15.0)
 
     def test_cooldown_prevents_second_snapshot(self):
-        from snapshot.trigger_guard import SnapshotTrigger
+        from snap.trigger_guard import SnapshotTrigger
         trigger = SnapshotTrigger(congestion_confirm_seconds=15.0, cooldown_seconds=60.0)
         trigger.check('CONGESTED', now=0.0)
         trigger.check('CONGESTED', now=15.0)  # First snapshot
@@ -455,7 +455,7 @@ class TestSnapshotTrigger:
         assert trigger.check('CONGESTED', now=76.0)
 
     def test_reset_on_free_state(self):
-        from snapshot.trigger_guard import SnapshotTrigger
+        from snap.trigger_guard import SnapshotTrigger
         trigger = SnapshotTrigger(congestion_confirm_seconds=15.0, cooldown_seconds=60.0)
         trigger.check('CONGESTED', now=0.0)
         trigger.check('FREE', now=10.0)  # Reset

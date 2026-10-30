@@ -1,7 +1,0 @@
-bicycle
-bus
-car
-motorbike
-people
-truck
-vehicle_fire

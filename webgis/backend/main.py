@@ -39,12 +39,13 @@ def _parse_timestamp(ts) -> float:
             return 0.0
 
 async def device_liveness_supervisor():
-    """Device Liveness Supervisor Probe: Định kỳ quét kiểm tra trạng thái liveness của Edge Nodes (Mục 4)."""
+    """Device Liveness Supervisor Probe: Định kỳ quét kiểm tra trạng thái liveness và độ tươi của dữ liệu AI (Fix L7)."""
     while True:
         try:
-            await asyncio.sleep(10)
+            await asyncio.sleep(5)
             now = time.time()
             for edge_id, node in list(store.nodes.items()):
+                # 1. Kiểm tra trạng thái Node phần cứng (Online / Offline qua last_seen của Heartbeat)
                 if node.get("status") == "online":
                     last_seen_val = node.get("last_seen")
                     last_seen_sec = _parse_timestamp(last_seen_val)
@@ -66,6 +67,25 @@ async def device_liveness_supervisor():
                             "status": "offline",
                             "last_seen": node.get("last_seen")
                         })
+                        continue
+
+                # 2. Kiểm tra độ tươi của dữ liệu đo đếm giao thông AI (Fix L7 - Staleness Watchdog)
+                # Nếu Node đang online và pipeline đang bật, nhưng quá 20s không có telemetry -> Đánh dấu STALE
+                if node.get("status") == "online" and node.get("pipeline_running"):
+                    last_telem_val = node.get("last_telemetry_at")
+                    if last_telem_val:
+                        last_telem_sec = _parse_timestamp(last_telem_val)
+                        if last_telem_sec > 0 and (now - last_telem_sec > 20):
+                            if node.get("data_status") != "stale":
+                                print(f"[STALENESS WATCHDOG] Node '{edge_id}' telemetry stale ({int(now - last_telem_sec)}s > 20s) -> marking STALE")
+                                store.mark_node_telemetry_stale(edge_id)
+                                await ws_manager.broadcast({
+                                    "type": "telemetry_stale",
+                                    "edge_id": edge_id,
+                                    "data_status": "stale",
+                                    "traffic_status": "STALE",
+                                    "message": "Dữ liệu AI đã quá hạn (stale), tạm dừng cập nhật lưu lượng."
+                                })
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -91,12 +111,26 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for React Frontend
+# Cấu hình danh sách tên miền được phép truy cập CORS an toàn (Fix S7)
+import os as _os
+raw_cors = _os.getenv("CORS_ORIGINS", "").strip()
+if raw_cors and raw_cors != "*":
+    ALLOWED_ORIGINS = [o.strip() for o in raw_cors.split(",") if o.strip()]
+else:
+    # Mặc định hỗ trợ tất cả các cổng thông dụng của WebGIS Frontend (Vite / React)
+    ALLOWED_ORIGINS = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.\d+\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
 )
 

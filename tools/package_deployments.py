@@ -124,7 +124,7 @@ def build_jetson_package(zip_path: Path):
         add_file_to_zip(zf, ROOT_DIR / "outbox" / ".gitkeep", "outbox/.gitkeep")
 
         # Modules
-        for mod in ['core', 'spatial', 'analytics', 'communication', 'config', 'configs', 'snap', 'snapshot', 'tools']:
+        for mod in ['core', 'spatial', 'analytics', 'communication', 'config', 'configs', 'snap', 'tools']:
             add_dir_to_zip(zf, ROOT_DIR / mod, mod)
 
     size_kb = zip_path.stat().st_size / 1024
@@ -154,7 +154,8 @@ def build_webgis_package(zip_path: Path):
         # MediaMTX Streaming Server
         add_dir_to_zip(zf, ROOT_DIR / "deploy" / "mediamtx", "deploy/mediamtx")
 
-        # WebGIS Tools (Simulators)
+        # Master Simulator & WebGIS Tools
+        add_file_to_zip(zf, ROOT_DIR / "tools" / "simulate_edge.py", "tools/simulate_edge.py")
         add_dir_to_zip(zf, ROOT_DIR / "webgis" / "tools", "webgis/tools")
 
         # WebGIS Backend (Exclude snapshot jpg/png/jpeg files, only keep placeholder and json data)
@@ -204,7 +205,7 @@ def build_full_clean_package(zip_path: Path):
         add_file_to_zip(zf, ROOT_DIR / "outbox" / ".gitkeep", "outbox/.gitkeep")
 
         # Edge modules
-        for mod in ['core', 'spatial', 'analytics', 'communication', 'config', 'configs', 'snap', 'snapshot', 'tools']:
+        for mod in ['core', 'spatial', 'analytics', 'communication', 'config', 'configs', 'snap', 'tools', 'docs']:
             add_dir_to_zip(zf, ROOT_DIR / mod, mod)
 
         # MediaMTX

@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { X, RefreshCw, Cpu, HardDrive, Thermometer, Wifi, Zap, CheckCircle2, AlertCircle } from "lucide-react";
 import type { DeviceHealthData } from "../../types/gis";
 import { api } from "../../services/api";
+import { wsService } from "../../services/websocket";
 
 interface DeviceHealthModalProps {
   edgeId: string;
@@ -19,17 +20,70 @@ export const DeviceHealthModal: React.FC<DeviceHealthModalProps> = ({
   const [health, setHealth] = useState<DeviceHealthData | undefined>(initialHealth);
   const [loading, setLoading] = useState(false);
 
+  // Lắng nghe gói tin phần cứng thời gian thực từ WebSocket
+  useEffect(() => {
+    const unsub = wsService.subscribe((msg: any) => {
+      const isTarget =
+        msg.edge_id === edgeId ||
+        (edgeId === "edge-110" && msg.edge_id === "edge-01") ||
+        (edgeId === "edge-01" && msg.edge_id === "edge-110");
+
+      if (msg.type === "device_health" && isTarget && msg.health) {
+        setHealth(msg.health);
+        setLoading(false);
+      } else if (msg.type === "telemetry" && isTarget && msg.data?.edge_metrics) {
+        const em = msg.data.edge_metrics;
+        setHealth((prev) => {
+          const hw = prev?.hardware || {};
+          return {
+            ...prev,
+            timestamp: msg.data.timestamp || new Date().toISOString(),
+            general: {
+              uptime_seconds: prev?.general?.uptime_seconds || 3600,
+              service_status: "running",
+              ...(prev?.general || {}),
+            },
+            network: {
+              mac_address: msg.data.mac_address || prev?.network?.mac_address || "00:04:4B:E7:44:E8",
+              local_ip: prev?.network?.local_ip || "192.168.1.x",
+              status: "connected",
+            },
+            hardware: {
+              ...hw,
+              cpu_usage_pct: em.cpu_percent ?? em.cpu_usage_pct ?? hw.cpu_usage_pct ?? 0,
+              ram_usage_pct: em.ram_percent ?? em.ram_usage_pct ?? hw.ram_usage_pct ?? 0,
+              gpu_usage_pct: em.gpu_percent ?? em.gpu_usage_pct ?? hw.gpu_usage_pct ?? 0,
+              temperature_c: em.temperature_c ?? hw.temperature_c ?? 40.0,
+              cpu_cores: hw.cpu_cores || 4,
+              power_mode: hw.power_mode || "10W_MAXN",
+            },
+            pipeline: {
+              camera_status: "streaming",
+              pipeline_fps: em.fps ?? prev?.pipeline?.pipeline_fps ?? 0,
+              inference_latency_ms: em.fps ? Math.round(1000 / Math.max(em.fps, 1)) : 0,
+            },
+          };
+        });
+      }
+    });
+
+    // Tự động yêu cầu cập nhật gói tin mới nhất khi vừa mở modal
+    handleRefresh();
+
+    return () => unsub();
+  }, [edgeId]);
+
   const handleRefresh = async () => {
     setLoading(true);
     try {
       const res = await api.diagnoseHealth(edgeId);
-      if (res.latest_health) {
+      if (res.latest_health && Object.keys(res.latest_health).length > 0) {
         setHealth(res.latest_health);
       }
     } catch (e) {
       console.error("Diagnosis error:", e);
     } finally {
-      setTimeout(() => setLoading(false), 600);
+      setTimeout(() => setLoading(false), 1000);
     }
   };
 

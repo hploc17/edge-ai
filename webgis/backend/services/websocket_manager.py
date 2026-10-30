@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Dict, Optional
 from fastapi import WebSocket
@@ -46,24 +47,63 @@ class WebSocketManager:
             del self.active_connections[websocket]
 
     async def broadcast(self, message: dict):
-        dead_connections = []
+        """Phát sóng dữ liệu song song không block: từng client có timeout 1.5s riêng (Fix D4, D6)."""
         msg_type = message.get("type")
         payload = json.dumps(message, ensure_ascii=False)
 
+        connections_to_send = []
         for connection, client_info in list(self.active_connections.items()):
-            # Lọc quyền cho các sự kiện nhạy cảm
+            # Lọc quyền cho các sự kiện nhạy cảm (Fix D6)
             if msg_type in STAFF_ONLY_EVENTS:
                 client_role = client_info.get("role")
                 if client_role not in STAFF_ROLES:
                     continue  # Bỏ qua không gửi cho Khách/USER
+            connections_to_send.append(connection)
 
+        if not connections_to_send:
+            return
+
+        async def _send_to_one(conn: WebSocket):
             try:
-                await connection.send_text(payload)
+                # Bọc timeout 1.5s cho từng client riêng biệt: client chậm không làm nghẽn client khác (Fix D4)
+                await asyncio.wait_for(conn.send_text(payload), timeout=1.5)
+                return None
             except Exception:
-                dead_connections.append(connection)
+                return conn
 
-        for dead in dead_connections:
-            self.disconnect(dead)
+        results = await asyncio.gather(*[_send_to_one(c) for c in connections_to_send], return_exceptions=True)
+        for res in results:
+            if res is not None and not isinstance(res, Exception):
+                self.disconnect(res)
+
+    async def send_to_user(self, user_id: str, message: dict) -> bool:
+        """Gửi thông điệp riêng cho một user_id cụ thể (Fix F3).
+        
+        Tránh phát tán dữ liệu riêng (như preview ROI) cho toàn bộ client khác.
+        Trả về True nếu gửi thành công cho ít nhất 1 socket của user, ngược lại False.
+        """
+        if not user_id:
+            return False
+
+        payload = json.dumps(message, ensure_ascii=False)
+        target_connections = [
+            conn for conn, info in list(self.active_connections.items())
+            if str(info.get("userId")) == str(user_id)
+        ]
+
+        if not target_connections:
+            return False
+
+        async def _send_to_one(conn: WebSocket):
+            try:
+                await asyncio.wait_for(conn.send_text(payload), timeout=1.5)
+                return True
+            except Exception:
+                self.disconnect(conn)
+                return False
+
+        results = await asyncio.gather(*[_send_to_one(c) for c in target_connections], return_exceptions=True)
+        return any(res is True for res in results)
 
 
 ws_manager = WebSocketManager()

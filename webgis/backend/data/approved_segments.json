@@ -4,5 +4,21 @@
     "name": "Test Segment",
     "road_length_m": 250.0,
     "lane_count": 2
+  },
+  "test-seg-stale": {
+    "segment_id": "test-seg-stale",
+    "name": "Stale Test Segment",
+    "road_length_m": 200.0,
+    "lane_count": 2
+  },
+  "test-seg-001": {
+    "segment_id": "test-seg-001",
+    "name": "Đường Nguyễn Trãi Test",
+    "road_length_m": 500.0,
+    "lane_count": 3
+  },
+  "segment-001": {
+    "segment_id": "segment-001",
+    "name": "Đoạn 01"
   }
 }

@@ -183,10 +183,17 @@ class ContextAwareTrafficStateModel(TrafficStateModel):
         stopped_max_dwell = stats.get('stopped_dwell_max_s', 0.0)
 
         # -------------------------------------------------------------
-        # BẢO VỆ 1: Low Vehicle Count Guard (Đoạn đường vắng)
+        # BẢO VỆ 1: Low Vehicle Count Guard & Stationary Incident (Fix A3)
         # -------------------------------------------------------------
         if vehicle_count is not None:
             if vehicle_count <= 2:
+                # Nếu có xe đứng yên (tai nạn/chết máy) kéo dài vượt ngưỡng -> SLOW
+                if vehicle_count > 0 and stopped_ratio >= 0.50:
+                    if stopped_max_dwell >= self.stationary_incident_threshold_s:
+                        self._incident_detected = True
+                        return self.SLOW
+                else:
+                    self._incident_detected = False
                 return self.FREE
             if vehicle_count <= 4 and density < self.slow_density:
                 if max_speed_kmh is not None and max_speed_kmh >= 20.0:
@@ -259,8 +266,10 @@ class ContextAwareTrafficStateModel(TrafficStateModel):
         effective_speed = median_speed_kmh if median_speed_kmh is not None else avg_speed_kmh
         stats = dwell_stats or self._last_dwell_stats
 
-        # Bảo vệ số lượng xe thấp
+        # Bảo vệ số lượng xe thấp (Fix A3: nếu phát hiện sự cố đứng yên, phản ánh điểm cảnh báo)
         if vehicle_count is not None and vehicle_count <= 2:
+            if getattr(self, '_incident_detected', False):
+                return 45  # Mức điểm cảnh báo SLOW (35-65) khi phát hiện sự cố đứng yên kéo dài
             return min(15, int(round(stopped_ratio * 15.0)))
 
         # Thành phần 1: Vận tốc (0 - 50 điểm) - Speed Reduction Index

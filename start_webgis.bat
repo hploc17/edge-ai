@@ -4,25 +4,23 @@ echo ===========================================================================
 echo       SMART TRAFFIC MONITORING - WEBGIS OPERATIONS CENTER
 echo ==============================================================================
 echo.
-echo [1/3] Kiem tra moi truong Python va Node.js...
+echo [1/4] Kiem tra moi truong Python va Node.js...
 where python >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [LOI] Khong tim thay Python! Vui long cai dat Python >= 3.10 va them vao PATH.
+    echo [LOI] Khong tim thay Python! Vui long cai dat Python va them vao PATH.
     pause
     exit /b 1
 )
 
 where node >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [LOI] Khong tim thay Node.js! Vui long cai dat Node.js >= 18 va them vao PATH.
+    echo [LOI] Khong tim thay Node.js! Vui long cai dat Node.js va them vao PATH.
     pause
     exit /b 1
 )
 
 echo.
-echo [2/3] Kiem tra va cai dat thu vien (Backend, Auth-Service, Frontend)...
-
-echo [INFO] Kiem tra thu vien Python Backend...
+echo [2/4] Kiem tra thu vien phu thuoc...
 python -m pip install -r "%~dp0webgis\backend\requirements.txt" --quiet
 
 if not exist "%~dp0webgis\auth-service\node_modules\" (
@@ -41,7 +39,23 @@ if not exist "%~dp0webgis\frontend\node_modules\" (
 )
 
 echo.
-echo [3/3] Khoi dong cac dich vu:
+echo [3/4] Kiem tra MediaMTX Streaming Server...
+netstat -ano | findstr :8554 >nul 2>&1
+if %errorlevel% equ 0 (
+    echo [OK] MediaMTX Streaming Server da san sang tren cong 8554.
+) else (
+    docker info >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo [INFO] Dang khoi dong MediaMTX Container qua Docker...
+        docker compose -f "%~dp0deploy\mediamtx\docker-compose.yml" up -d >nul 2>&1
+    ) else if exist "%~dp0deploy\mediamtx\mediamtx.exe" (
+        echo [INFO] Dang khoi dong MediaMTX Binary...
+        start "WebGIS MediaMTX Server" cmd /k "cd /d %~dp0deploy\mediamtx && mediamtx.exe mediamtx.yml"
+    )
+)
+
+echo.
+echo [4/4] Khoi dong cac dich vu WebGIS:
 echo   - Auth Service (Express):         http://localhost:5000
 echo   - Backend GIS Hub (FastAPI):      http://localhost:8000 (Swagger: /docs)
 echo   - Frontend WebGIS Dashboard:     http://localhost:5173
@@ -50,17 +64,14 @@ echo ===========================================================================
 echo Dang mo 3 cua so tien trinh rieng biet...
 echo ==============================================================================
 
-:: Khoi dong Auth Service (Express :5000)
-start "WebGIS Auth Service (:5000)" cmd /k "cd /d %~dp0webgis\auth-service && npm run dev"
-
-:: Khoi dong Backend Hub FastAPI (:8000)
-start "WebGIS Backend (:8000)" cmd /k "cd /d %~dp0webgis\backend && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
-
-:: Khoi dong Frontend Vite React (:5173)
-start "WebGIS Frontend (:5173)" cmd /k "cd /d %~dp0webgis\frontend && npm run dev"
+start "WebGIS Auth Service" cmd /k "cd /d %~dp0webgis\auth-service && npm run dev"
+start "WebGIS Backend" cmd /k "cd /d %~dp0webgis\backend && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+start "WebGIS Frontend" cmd /k "cd /d %~dp0webgis\frontend && npm run dev"
 
 echo.
-echo [OK] Ca 3 dich vu dang duoc khoi dong trong cac cua so rieng biet.
-echo Truy cap trinh duyet tai: http://localhost:5173
+echo ==============================================================================
+echo [THANH CONG] Toan bo he thong WebGIS dang duoc khoi dong!
+echo Mo trinh duyet tai: http://localhost:5173
+echo ==============================================================================
 echo.
 pause

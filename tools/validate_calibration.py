@@ -26,12 +26,24 @@ from core.gstreamer_builder import normalized_to_pixels
 import numpy as np
 
 
+def check_calibration_order(pts, road_w, road_l):
+    """Kiểm tra thứ tự 4 điểm P1-P4 và tỉ lệ phối cảnh (Fix R2)."""
+    try:
+        PerspectiveCalibration.validate_aspect_ratio_and_order(pts, road_w, road_l)
+        print("[CHECK] Calibration order and aspect ratio: VALID (P1->P2->P3->P4 verified)")
+        return True
+    except ValueError as e:
+        print("[CHECK] Calibration order/aspect ratio WARNING: %s" % e)
+        return False
+
+
 def load_calibration_from_json(config_path):
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = json.load(f)
     pts = normalized_to_pixels(cfg["calibration_image_points"])
     road_w = float(cfg.get("road_width_m", 7.0))
     road_l = float(cfg.get("road_length_m", 50.0))
+    check_calibration_order(pts, road_w, road_l)
     calib = PerspectiveCalibration(pts, road_w, road_l)
     return calib, road_w, road_l
 
