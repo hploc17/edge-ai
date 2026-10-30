@@ -18,43 +18,43 @@
     "altitude_m": 12.0,
     "osm_way_id": 1220197484,
     "osm_road_type": "secondary",
-    "status": "offline",
-    "traffic_status": "STALE",
-    "congestion_score": 0,
-    "avg_speed_kmh": 0.0,
-    "current_vehicle_count": 0,
+    "status": "online",
+    "traffic_status": "FREE",
+    "congestion_score": 25,
+    "avg_speed_kmh": 9.83,
+    "current_vehicle_count": 9,
     "stopped_vehicle_count": 0,
-    "density_veh_per_km_lane": 0.0,
+    "density_veh_per_km_lane": 225.0,
     "counts_by_class": {
       "bicycle": 0,
       "bus": 0,
-      "car": 0,
-      "motorcycle": 0,
+      "car": 8,
+      "motorcycle": 1,
       "truck": 0
     },
-    "last_seen": "2026-10-29T17:29:25.284031",
+    "last_seen": "2026-10-30T09:03:00.867806",
     "approved_at": "2026-10-27T10:35:10.261003",
     "traffic": {
-      "vehicle_count": 0,
-      "average_speed": 0.0,
-      "congestion_level": "STALE",
-      "congestion_score": 0,
+      "vehicle_count": 9,
+      "average_speed": 9.83,
+      "congestion_level": "FREE",
+      "congestion_score": 25,
       "stopped_vehicle_count": 0,
-      "density_veh_per_km_lane": 0.0,
+      "density_veh_per_km_lane": 225.0,
       "counts_by_class": {
         "bicycle": 0,
         "bus": 0,
-        "car": 0,
-        "motorcycle": 0,
+        "car": 8,
+        "motorcycle": 1,
         "truck": 0
       }
     },
     "system": {
-      "cpu_usage": 11,
-      "gpu_usage": 0,
-      "ram_usage": 40,
-      "temperature": 36.0,
-      "fps": 22.3
+      "cpu_usage": 26,
+      "gpu_usage": 762,
+      "ram_usage": 77,
+      "temperature": 49.5,
+      "fps": 17.6
     },
     "latest_health": {
       "command_id": "diag-445f4359",
@@ -70,19 +70,19 @@
       },
       "network": {
         "local_ip": "192.168.88.176",
-        "mac_address": "00:04:4B:E7:44:E8",
+        "mac_address": "80:32:53:8A:88:B5",
         "status": "connected"
       },
       "hardware": {
-        "cpu_usage_pct": 11,
+        "cpu_usage_pct": 26,
         "cpu_cores": 4,
         "ram_used_mb": 1563,
         "ram_total_mb": 3956,
-        "ram_usage_pct": 40,
+        "ram_usage_pct": 77,
         "swap_used_mb": 4,
         "swap_total_mb": 1978,
-        "gpu_usage_pct": 0,
-        "temperature_c": 36.0,
+        "gpu_usage_pct": 762,
+        "temperature_c": 49.5,
         "power_mode": "10W_MAXN"
       },
       "storage": {
@@ -93,18 +93,19 @@
       },
       "pipeline": {
         "camera_status": "streaming",
-        "pipeline_fps": 0.0,
-        "inference_latency_ms": null
+        "pipeline_fps": 17.6,
+        "inference_latency_ms": 56.8
       }
     },
     "id_mismatch": true,
     "serial_number": "1422919111126",
     "pipeline_running": false,
-    "data_status": "stale",
-    "device_reported_time": "2026-10-29T17:26:05+07:00",
+    "data_status": "live",
+    "device_reported_time": "2026-10-30T08:44:49+07:00",
     "pipeline_pid": null,
     "actual_hardware_id": "edge-01",
-    "mismatch_message": "Thiết bị tự xưng là 'edge-01', mã quản lý Web là 'edge-110'."
+    "mismatch_message": "Thiết bị tự xưng là 'edge-01', mã quản lý Web là 'edge-110'.",
+    "last_telemetry_at": "2026-10-30T08:46:08.160391"
   },
   "edge-perf-01": {
     "edge_id": "edge-perf-01",
@@ -112,7 +113,7 @@
     "latitude": 10.85,
     "longitude": 106.66,
     "camera_id": "camera-01",
-    "last_seen": "2026-10-29T17:30:58.949324",
+    "last_seen": "2026-10-30T09:03:03.327571",
     "status": "online",
     "traffic_status": "FREE",
     "congestion_score": 30,
@@ -132,7 +133,7 @@
     },
     "system": {},
     "pipeline_running": true,
-    "last_telemetry_at": "2026-10-29T17:30:58.949324",
+    "last_telemetry_at": "2026-10-30T09:03:03.327571",
     "data_status": "live"
   },
   "edge-liveness-01": {
@@ -167,7 +168,7 @@
     "latitude": 21.0,
     "longitude": 105.8,
     "camera_id": "camera-01",
-    "last_seen": "2026-10-29T17:30:58.691989",
+    "last_seen": "2026-10-30T09:03:03.078154",
     "status": "online",
     "traffic_status": "FREE",
     "congestion_score": 0,
@@ -199,7 +200,7 @@
       "fps": 28.5
     },
     "pipeline_running": true,
-    "last_telemetry_at": "2026-10-29T17:30:58.691989",
+    "last_telemetry_at": "2026-10-30T09:03:03.078154",
     "data_status": "live",
     "latest_health": {
       "general": {
@@ -231,7 +232,7 @@
     "latitude": 21.0,
     "longitude": 105.8,
     "camera_id": "camera-01",
-    "last_seen": "2026-10-29T17:30:58.777853",
+    "last_seen": "2026-10-30T09:03:03.159442",
     "status": "online",
     "traffic_status": "CONGESTED",
     "congestion_score": 85,
@@ -257,7 +258,7 @@
     },
     "system": {},
     "pipeline_running": true,
-    "last_telemetry_at": "2026-10-29T17:30:58.777853",
+    "last_telemetry_at": "2026-10-30T09:03:03.159442",
     "data_status": "live"
   },
   "test-edge-01": {
@@ -267,7 +268,7 @@
     "latitude": 10.84,
     "longitude": 106.65,
     "camera_id": "camera-01",
-    "last_seen": "2026-10-29T17:30:58.817905",
+    "last_seen": "2026-10-30T09:03:03.199232",
     "status": "online",
     "traffic_status": "FREE",
     "congestion_score": 20,
@@ -287,7 +288,7 @@
     },
     "system": {},
     "pipeline_running": true,
-    "last_telemetry_at": "2026-10-29T17:30:58.817905",
+    "last_telemetry_at": "2026-10-30T09:03:03.199232",
     "data_status": "live"
   },
   "edge-01": {
@@ -295,7 +296,7 @@
     "segment_id": "segment-001",
     "name": "Camera AI Jetson (edge-01)",
     "camera_id": "camera-01",
-    "last_seen": "2026-10-29T17:30:58.884420",
+    "last_seen": "2026-10-30T09:03:03.262702",
     "status": "online",
     "traffic_status": "SLOW",
     "congestion_score": 55,
@@ -306,8 +307,8 @@
     "counts_by_class": {
       "bicycle": 0,
       "bus": 0,
-      "car": 0,
-      "motorcycle": 0,
+      "car": 8,
+      "motorcycle": 1,
       "truck": 0
     },
     "traffic": {
@@ -320,20 +321,20 @@
       "counts_by_class": {
         "bicycle": 0,
         "bus": 0,
-        "car": 0,
-        "motorcycle": 0,
+        "car": 8,
+        "motorcycle": 1,
         "truck": 0
       }
     },
     "system": {
-      "cpu_usage": 15,
-      "gpu_usage": 0,
-      "ram_usage": 38,
-      "temperature": 44.5,
-      "fps": 17.8
+      "cpu_usage": 26,
+      "gpu_usage": 762,
+      "ram_usage": 77,
+      "temperature": 49.5,
+      "fps": 17.6
     },
     "pipeline_running": true,
-    "last_telemetry_at": "2026-10-29T17:30:58.884420",
+    "last_telemetry_at": "2026-10-30T09:03:03.262702",
     "data_status": "live",
     "device_reported_time": "2026-10-29T17:21:57+07:00",
     "id_mismatch": false,
@@ -360,15 +361,15 @@
         "status": "connected"
       },
       "hardware": {
-        "cpu_usage_pct": 15,
+        "cpu_usage_pct": 26,
         "cpu_cores": 4,
         "ram_used_mb": 1778,
         "ram_total_mb": 3956,
-        "ram_usage_pct": 38,
+        "ram_usage_pct": 77,
         "swap_used_mb": 336,
         "swap_total_mb": 1978,
-        "gpu_usage_pct": 0,
-        "temperature_c": 44.5,
+        "gpu_usage_pct": 762,
+        "temperature_c": 49.5,
         "power_mode": "10W_MAXN"
       },
       "storage": {
@@ -379,8 +380,8 @@
       },
       "pipeline": {
         "camera_status": "streaming",
-        "pipeline_fps": 0.0,
-        "inference_latency_ms": null
+        "pipeline_fps": 17.6,
+        "inference_latency_ms": 56.8
       }
     }
   }

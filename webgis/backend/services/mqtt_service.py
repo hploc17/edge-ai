@@ -147,6 +147,8 @@ class MQTTService:
                         target_id = approved_node["edge_id"]
                         if not payload.get("segment_id") and approved_node.get("segment_id"):
                             payload["segment_id"] = approved_node["segment_id"]
+                        # Cập nhật pipeline_running = True khi nhận telemetry (telemetry chỉ gửi khi pipeline đang chạy)
+                        was_running = approved_node.get("pipeline_running", False)
                         store.update_telemetry(target_id, payload)
                         self._broadcast_async({
                             "type": "telemetry",
@@ -154,6 +156,17 @@ class MQTTService:
                             "coordinates": [float(approved_node.get("longitude", 106.65)), float(approved_node.get("latitude", 10.84))],
                             "data": payload
                         })
+                        # Nếu pipeline chuyển từ false → true, broadcast heartbeat cập nhật để frontend sync ngay
+                        if not was_running and approved_node.get("pipeline_running", False):
+                            self._broadcast_async({
+                                "type": "heartbeat",
+                                "edge_id": target_id,
+                                "status": "online",
+                                "pipeline_running": True,
+                                "coordinates": [float(approved_node.get("longitude", 106.65)), float(approved_node.get("latitude", 10.84))],
+                                "last_seen": approved_node.get("last_seen", ""),
+                                "data_status": approved_node.get("data_status", "live"),
+                            })
                         seg_id = approved_node.get("segment_id")
                         if seg_id:
                             seg = store.get_segment(seg_id)

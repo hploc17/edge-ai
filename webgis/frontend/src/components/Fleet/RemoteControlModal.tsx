@@ -162,9 +162,17 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
   const [displayMode, setDisplayMode] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string>("");
+  const [activeTab, setActiveTab] = useState<"stream" | "roi">("roi");
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+
+  // Tự động chuyển sang tab Live Stream khi pipeline đang hoạt động
+  useEffect(() => {
+    if (pipelineRunning) {
+      setActiveTab("stream");
+    }
+  }, [pipelineRunning]);
 
   // ── Khôi phục trạng thái Pipeline khi mở Modal ──────────────────────────────
   useEffect(() => {
@@ -198,7 +206,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
     };
   }, [edgeId]);
 
-  // ── Lắng nghe WebSocket để nhận preview frame và command_result ─────────────
+  // ── Lắng nghe WebSocket để nhận preview frame, command_result, heartbeat, telemetry ──
 
   useEffect(() => {
     const unsubscribe = wsService.subscribe((msg: any) => {
@@ -207,6 +215,25 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
           msg.edge_id === edgeId ||
           (edgeId === "edge-110" && msg.edge_id === "edge-01") ||
           (edgeId === "edge-01" && msg.edge_id === "edge-110");
+
+        // Lắng nghe heartbeat để đồng bộ trạng thái pipeline realtime
+        if ((msg.type === "heartbeat" || msg.type === "node_registered") && isTargetNode) {
+          if (typeof msg.pipeline_running === "boolean") {
+            setPipelineRunning(msg.pipeline_running);
+            if (msg.pipeline_running) {
+              setStage((prev) => (prev === "idle" ? "pipeline_control" : prev));
+              if (msg.pipeline_running) {
+                setStatusMessage("✅ AI Pipeline đang hoạt động trên Jetson.");
+              }
+            }
+          }
+        }
+
+        // Lắng nghe telemetry — nếu nhận được telemetry nghĩa là pipeline đang chạy
+        if (msg.type === "telemetry" && isTargetNode) {
+          setPipelineRunning(true);
+          setStage((prev) => (prev === "idle" ? "pipeline_control" : prev));
+        }
 
         if (msg.type === "preview_frame" && isTargetNode) {
           const rawUrl = msg.preview_url || msg.image_data;
@@ -269,6 +296,8 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
             setPipelineRunning(false);
             const stopMsg = typeof msg.message === "string" ? msg.message : "✅ Pipeline đã kết thúc/dừng.";
             setStatusMessage(stopMsg);
+            // Reset stage về idle sau khi dừng thành công để tránh UI loạn
+            setStage("idle");
           }
           if (msg.action === "list_videos" && msg.status === "completed") {
             const vids = Array.isArray(msg.message) ? msg.message : [];
@@ -483,6 +512,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
         `✅ Đã gửi lệnh khởi động! Jetson đang kích hoạt pipeline nhận diện ${isCsi ? "Camera CSI" : "Video"} với cấu hình ROI vừa vẽ...`
       );
       setPipelineRunning(true);
+      setActiveTab("stream");
     } catch (e: any) {
       setErrorMessage("Lỗi khởi động pipeline: " + (e.response?.data?.detail || e.message));
     }
@@ -837,7 +867,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
             )}
 
             {/* Step 4: Pipeline */}
-            {isPipelineStage && (
+            {(isPipelineStage || pipelineRunning) && (
               <div className="space-y-2 bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
                 <div className="flex items-center gap-2 text-xs font-bold text-slate-700 uppercase tracking-wide">
                   <Play className="w-3.5 h-3.5 text-emerald-600" />
@@ -914,51 +944,84 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
             )}
           </div>
 
-          {/* Right Panel: Canvas */}
-          <div className="flex-1 flex items-center justify-center bg-slate-950 relative overflow-hidden select-none">
-            {!previewImage ? (
-              pipelineRunning ? (
+          {/* Right Panel: Canvas & Live Stream */}
+          <div className="flex-1 flex flex-col bg-slate-950 relative overflow-hidden select-none">
+            {pipelineRunning && (
+              <div className="flex items-center justify-between px-4 py-2 bg-slate-900/90 border-b border-slate-800 shrink-0 z-10">
+                <div className="flex items-center gap-1.5 p-0.5 bg-slate-800/80 rounded-lg border border-slate-700/60">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("stream")}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition ${
+                      activeTab === "stream"
+                        ? "bg-indigo-600 text-white shadow-xs"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>🎥 Live Stream Trực Tiếp</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("roi")}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition ${
+                      activeTab === "roi"
+                        ? "bg-slate-700 text-white shadow-xs"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    <span>📐 Vùng ROI Đã Cấu Hình</span>
+                  </button>
+                </div>
+                <div className="text-[11px] text-slate-400 font-medium">
+                  {activeTab === "stream" ? "Luồng trực tiếp MediaMTX WebRTC / LL-HLS" : "Khung hình cố định & Tọa độ"}
+                </div>
+              </div>
+            )}
+
+            <div className="flex-1 flex items-center justify-center relative overflow-hidden">
+              {activeTab === "stream" && pipelineRunning ? (
                 <div className="relative w-full h-full flex flex-col items-center justify-center p-3">
                   <MediaMTXPlayer edgeId={edgeId} className="w-full h-full" />
                 </div>
-              ) : (
+              ) : !previewImage ? (
                 <div className="text-center text-slate-500 space-y-3 p-8">
                   <Camera className="w-16 h-16 mx-auto text-slate-600 stroke-[1.2]" />
                   <p className="text-sm font-semibold text-slate-300">Chưa có khung hình</p>
                   <p className="text-xs text-slate-400">Chọn video hoặc Camera CSI ở cột bên trái và bấm "Lấy khung hình"</p>
                 </div>
-              )
-            ) : (
-              <div className="relative w-full h-full flex items-center justify-center p-3">
-                {isSynthetic && (
-                  <div className="absolute top-4 left-4 right-4 z-20 flex items-center gap-2 p-3 rounded-xl bg-amber-500/95 border border-amber-400 text-amber-950 font-bold text-xs shadow-lg backdrop-blur-md">
-                    <AlertTriangle className="w-5 h-5 shrink-0 text-amber-950 animate-bounce" />
-                    <span>⚠️ CẢNH BÁO: Khung hình mô phỏng (Synthetic Canvas). Camera phần cứng đang bị ngắt kết nối hoặc không phản hồi! Vui lòng kiểm tra camera trước khi vẽ ROI thực tế.</span>
-                  </div>
-                )}
-                {/* Hidden image dùng để vẽ lên canvas */}
-                <img
-                  ref={imgRef}
-                  src={previewImage}
-                  onLoad={renderCanvas}
-                  className="hidden"
-                  alt=""
-                />
-                <canvas
-                  ref={canvasRef}
-                  onClick={handleCanvasClick}
-                  onContextMenu={handleCanvasRightClick}
-                  className="max-w-full max-h-full rounded-xl border border-slate-700 shadow-2xl"
-                  style={{ cursor: drawMode ? "crosshair" : "default" }}
-                />
-                {drawMode && (
-                  <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full text-xs font-bold text-white shadow-xl backdrop-blur-md"
-                    style={{ backgroundColor: COLORS[drawMode].stroke }}>
-                    Đang vẽ {drawMode.toUpperCase()} ROI · Chuột trái: thêm điểm · Chuột phải: xóa
-                  </div>
-                )}
-              </div>
-            )}
+              ) : (
+                <div className="relative w-full h-full flex items-center justify-center p-3">
+                  {isSynthetic && (
+                    <div className="absolute top-4 left-4 right-4 z-20 flex items-center gap-2 p-3 rounded-xl bg-amber-500/95 border border-amber-400 text-amber-950 font-bold text-xs shadow-lg backdrop-blur-md">
+                      <AlertTriangle className="w-5 h-5 shrink-0 text-amber-950 animate-bounce" />
+                      <span>⚠️ CẢNH BÁO: Khung hình mô phỏng (Synthetic Canvas). Camera phần cứng đang bị ngắt kết nối hoặc không phản hồi! Vui lòng kiểm tra camera trước khi vẽ ROI thực tế.</span>
+                    </div>
+                  )}
+                  {/* Hidden image dùng để vẽ lên canvas */}
+                  <img
+                    ref={imgRef}
+                    src={previewImage}
+                    onLoad={renderCanvas}
+                    className="hidden"
+                    alt=""
+                  />
+                  <canvas
+                    ref={canvasRef}
+                    onClick={handleCanvasClick}
+                    onContextMenu={handleCanvasRightClick}
+                    className="max-w-full max-h-full rounded-xl border border-slate-700 shadow-2xl"
+                    style={{ cursor: drawMode ? "crosshair" : "default" }}
+                  />
+                  {drawMode && (
+                    <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full text-xs font-bold text-white shadow-xl backdrop-blur-md"
+                      style={{ backgroundColor: COLORS[drawMode].stroke }}>
+                      Đang vẽ {drawMode.toUpperCase()} ROI · Chuột trái: thêm điểm · Chuột phải: xóa
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

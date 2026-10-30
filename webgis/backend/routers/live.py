@@ -46,10 +46,10 @@ def _build_stream_urls(edge_id: str, request: Optional[Request] = None) -> dict:
         if proto_hdr:
             client_scheme = proto_hdr.lower()
 
-    if host_env and host_env not in ("localhost", "127.0.0.1", ""):
-        chosen_host = host_env
-    elif client_host and client_host not in ("localhost", "127.0.0.1"):
+    if client_host and client_host not in ("localhost", "127.0.0.1"):
         chosen_host = client_host
+    elif host_env and host_env not in ("localhost", "127.0.0.1", ""):
+        chosen_host = host_env
     else:
         chosen_host = host_env or client_host or "localhost"
 

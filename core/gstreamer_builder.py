@@ -516,7 +516,26 @@ def build_pipeline(args, source, kind, Gst):
         mediamtx_host = str(os.getenv("MEDIAMTX_HOST", "localhost")).split("#")[0].strip().strip("\"'")
         mediamtx_rtsp_port = _safe_int_env("MEDIAMTX_RTSP_PORT", 8554)
         edge_id = str(os.getenv("EDGE_ID", "edge-01")).split("#")[0].strip().strip("\"'")
-        live_rtsp_url = str(os.getenv("LIVE_RTSP_URL", "rtsp://%s:%d/live/%s" % (mediamtx_host, mediamtx_rtsp_port, edge_id))).split("#")[0].strip().strip("\"'")
+
+        # Tự động trỏ sang host của BACKEND_URL nếu MEDIAMTX_HOST đang để localhost mà BACKEND_URL là IP LAN (Fix Jetson -> PC)
+        backend_url = str(os.getenv("BACKEND_URL", "")).split("#")[0].strip().strip("\"'")
+        if mediamtx_host in ("localhost", "127.0.0.1", "") and backend_url:
+            try:
+                try:
+                    from urllib.parse import urlparse
+                except ImportError:
+                    from urlparse import urlparse
+                b_parsed = urlparse(backend_url)
+                if b_parsed.hostname and b_parsed.hostname not in ("localhost", "127.0.0.1"):
+                    print("[GSTREAMER BUILDER] Auto-detected MediaMTX host from BACKEND_URL: %s" % b_parsed.hostname)
+                    mediamtx_host = b_parsed.hostname
+            except Exception:
+                pass
+
+        if "LIVE_RTSP_URL" in os.environ:
+            live_rtsp_url = str(os.getenv("LIVE_RTSP_URL")).split("#")[0].strip().strip("\"'")
+        else:
+            live_rtsp_url = "rtsp://%s:%d/live/%s" % (mediamtx_host, mediamtx_rtsp_port, edge_id)
 
         # An toàn tuyệt đối: Kiểm tra cổng máy chủ MediaMTX trước khi gắn rtspclientsink
         # Tránh lỗi sập pipeline: gst-resource-error-quark: Could not open resource for reading and writing. (7)
