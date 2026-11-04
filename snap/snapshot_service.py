@@ -467,13 +467,18 @@ class SnapshotCoordinator(object):
         self._emit(command, "completed", completed["message"], snapshot_id=key, snapshot_url=url)
         return True
 
+    def _auth_headers(self):
+        # Backend xác thực thiết bị Edge qua X-Edge-Token; giữ Bearer để tương thích ngược.
+        return {"X-Edge-Token": self.edge_token,
+                "Authorization": "Bearer " + self.edge_token}
+
     def _upload_http(self, payload, jpeg):
         try:
             import requests
             if self._session is None:
                 self._session = requests.Session()
             response = self._session.post(self.api_url + "/api/v1/snapshots",
-                                          headers={"Authorization": "Bearer " + self.edge_token},
+                                          headers=self._auth_headers(),
                                           files={"image": ("snapshot.jpg", jpeg, "image/jpeg")}, data=payload,
                                           timeout=(3, self.upload_timeout), allow_redirects=False)
             try:
@@ -504,10 +509,9 @@ class SnapshotCoordinator(object):
             req = urllib_req.Request(
                 self.api_url + "/api/v1/snapshots",
                 data=body,
-                headers={
+                headers=dict(self._auth_headers(), **{
                     'Content-Type': 'multipart/form-data; boundary=%s' % boundary,
-                    'Authorization': 'Bearer ' + self.edge_token,
-                }
+                })
             )
             with urllib_req.urlopen(req, timeout=self.upload_timeout) as resp:
                 status_code = resp.getcode()

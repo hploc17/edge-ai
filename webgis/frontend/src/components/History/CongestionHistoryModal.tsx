@@ -25,17 +25,18 @@ export const CongestionHistoryModal: React.FC<CongestionHistoryModalProps> = ({
 
   useEffect(() => {
     const fetchData = async () => {
-      try {
-        const [timelineData, snaps] = await Promise.all([
-          api.getTimeline(selectedSegment),
-          api.getSnapshots(selectedSegment)
-        ]);
-        setRecords(timelineData.records);
-        setSnapshots(snaps);
+      // Tải độc lập: ảnh snapshot chỉ dành cho Staff, khách vẫn phải xem được biểu đồ lịch sử
+      const [timelineRes, snapsRes] = await Promise.allSettled([
+        api.getTimeline(selectedSegment),
+        api.getSnapshots(selectedSegment)
+      ]);
+      if (timelineRes.status === "fulfilled") {
+        setRecords(timelineRes.value.records);
         setCurrentIndex(0);
-      } catch (e) {
-        console.error("Failed to load history:", e);
+      } else {
+        console.error("Failed to load history timeline:", timelineRes.reason);
       }
+      setSnapshots(snapsRes.status === "fulfilled" ? snapsRes.value : []);
     };
 
     fetchData();

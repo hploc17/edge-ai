@@ -74,13 +74,44 @@ SNAPSHOT_TRIGGER_FILE = str(SCRIPT_DIR / '.snapshot_trigger')
 PREVIEW_TRIGGER_FILE = str(SCRIPT_DIR / '.preview_trigger')
 LATEST_PREVIEW_FILE = str(SCRIPT_DIR / '.latest_preview.jpg')
 
+# Khóa chạy một bản: camera CSI (Argus) chỉ cho một phiên. Agent cũng đọc khóa này để biết
+# pipeline đang chạy, kể cả khi main.py được chạy tay ngoài agent.
+PIPELINE_LOCK_FILE = str(SCRIPT_DIR / '.pipeline.lock')
+EXIT_ALREADY_RUNNING = 3
+_pipeline_lock_handle = None
+
+
+def acquire_single_instance_lock(wait_seconds=3.0):
+    """Giữ khóa độc quyền suốt vòng đời tiến trình. Trả về False nếu bản khác đang giữ."""
+    global _pipeline_lock_handle
+    try:
+        import fcntl
+    except ImportError:
+        return True  # Windows (môi trường phát triển): không có camera CSI, bỏ qua khóa
+    handle = open(PIPELINE_LOCK_FILE, 'a+')
+    deadline = time.monotonic() + float(wait_seconds)
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except (IOError, OSError):
+            # Agent có thể đang thử khóa trong tích tắc để kiểm tra trạng thái: chờ ngắn rồi thử lại
+            if time.monotonic() >= deadline:
+                handle.close()
+                return False
+            time.sleep(0.2)
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()))
+    handle.flush()
+    _pipeline_lock_handle = handle
+    return True
+
+# Chỉ đặt mặc định cho các giá trị không bí mật. EDGE_TOKEN / MQTT_PASS bắt buộc khai báo trong .env.
 os.environ.setdefault('BACKEND_URL', 'http://localhost:8000')
-os.environ.setdefault('EDGE_TOKEN', 'dev-edge-token')
 os.environ.setdefault('MQTT_HOST',
                       '829e7cb26c594257a7470e5a5af58064.s1.eu.hivemq.cloud')
 os.environ.setdefault('MQTT_PORT', '8883')
-os.environ.setdefault('MQTT_USER', 'admin')
-os.environ.setdefault('MQTT_PASS', '12345678')
 os.environ.setdefault('EDGE_ID', 'edge-01')
 os.environ.setdefault('MQTT_PIPELINE_CLIENT_ID', 'edge-01-pipeline')
 
@@ -112,17 +143,6 @@ from analytics.speed_estimator import (
 )
 from communication.mqtt_client import MQTTPublisher
 from communication.command_router import CommandHandler
-from communication.system_metrics import collect_comprehensive_health, _get_mac_address
-from config.settings import (
-    OUTBOX_DIR,
-    DEVICE_NAME,
-    ROAD_NAME,
-    GEO_LAT,
-    GEO_LNG,
-    GEO_ALTITUDE_M,
-    CAMERA_HEADING,
-    CAMERA_FOV,
-)
 
 
 def _collect_edge_metrics(fps):
@@ -450,6 +470,11 @@ def main():
                         help='Max allowed bbox area fraction change between frames (default: 0.60)')
     args = parser.parse_args()
 
+    if not acquire_single_instance_lock():
+        print('[PIPELINE] Another pipeline instance is running and holds the camera (%s). '
+              'Stop it before starting a new one.' % PIPELINE_LOCK_FILE, file=sys.stderr)
+        sys.exit(EXIT_ALREADY_RUNNING)
+
     # Resolve all config paths to absolute paths
     args.roi_config = resolve_config_file(args.roi_config)
     args.infer_config = resolve_config_file(args.infer_config)
@@ -614,69 +639,9 @@ def main():
         mqtt_publisher = MQTTPublisher(command_callback=None, client_id=pipeline_client_id, is_agent=False,
                                        subscribe_commands=True)
         cmd_handler = CommandHandler(mqtt_publisher)
-
-        # Gói 2: Chuẩn đoán sức khỏe theo yêu cầu WebGIS
-        def _handle_get_health(payload):
-            return collect_comprehensive_health(
-                fps=current_fps[0],
-                camera_status='streaming',
-                outbox_dir=str(OUTBOX_DIR),
-            )
-
-        cmd_handler.register('get_health', _handle_get_health)
-        cmd_handler.register('request_status', lambda p: {
-            'status': 'running',
-            'edge_id': os.getenv('EDGE_ID', 'edge-01'),
-            'fps': round(float(current_fps[0]), 1),
-            'model_version': os.getenv('MODEL_VERSION', 'exp.engine'),
-        })
-
-        # Gói điều khiển: Hot-Reload ROI và Homography Calibration trực tiếp trong bộ nhớ (Fix R3)
-        def _handle_reload_config(payload):
-            print('[HOT-RELOAD] Received reload_config command via MQTT...')
-            params = payload.get('params', {}) if isinstance(payload, dict) else {}
-            # Ưu tiên cấu hình remote nếu không chỉ định đường dẫn cụ thể
-            remote_cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'configs', 'roi_config.remote.json')
-            if not params.get('config_path') and os.path.isfile(remote_cfg):
-                cfg_path = remote_cfg
-            else:
-                cfg_path = params.get('config_path') or args.roi_config
-            new_cfg = load_traffic_config(cfg_path)
-            
-            with geometry_lock:
-                # Cập nhật đa giác ROI an toàn dưới Lock
-                geometry['analysis'] = normalized_to_pixels(new_cfg['analysis_roi'])
-                geometry['detection'] = normalized_to_pixels(new_cfg['detection_roi'])
-                presence_counter.update_geometry(geometry['analysis'])
-                
-                # Cập nhật ma trận phối cảnh và XÓA sạch lịch sử track cũ để không trộn ma trận cũ với mới
-                calib_pts = normalized_to_pixels(new_cfg['calibration_image_points'])
-                new_calib = PerspectiveCalibration(
-                    calib_pts,
-                    new_cfg['road_width_m'],
-                    new_cfg['road_length_m']
-                )
-                speed_estimator.update_calibration(new_calib)
-                presence_counter.reset()
-                
-                # Cập nhật thông số mặt đường chuẩn xác qua update_geometry
-                analyzer.update_geometry(new_cfg['road_length_m'], new_cfg['lane_count'])
-                if hasattr(state_model, 'context') and 'traffic_context' in new_cfg:
-                    ctx_val = str(new_cfg['traffic_context']).lower().strip()
-                    if ctx_val in ('signalized', 'midblock'):
-                        state_model.context = ctx_val
-                        print('[HOT-RELOAD] Updated traffic context to: %s' % ctx_val)
-
-            print('[HOT-RELOAD] Successfully reloaded ROI and Calibration in memory without restarting!')
-            return {
-                'command_id': payload.get('command_id', 'unknown'),
-                'status': 'SUCCESS',
-                'message': 'ROI and Calibration hot-reloaded successfully',
-                'road_length_m': new_cfg['road_length_m'],
-                'road_width_m': new_cfg['road_width_m']
-            }
-
-        cmd_handler.register('reload_config', _handle_reload_config)
+        # Phân vai: tiến trình pipeline CHỈ nhận lệnh live stream (mqtt_client.PIPELINE_OWNED_ACTIONS).
+        # Các lệnh khác (get_health, request_status, reload_config, snapshot...) do Jetson Agent xử lý;
+        # reload_config được Agent thực hiện bằng cách khởi động lại pipeline với cấu hình mới.
 
         # Gói Live Streaming: MediaMTX On-Demand
         try:
@@ -709,23 +674,7 @@ def main():
         snapshot_service.start()
 
     if mqtt_publisher is not None:
-        def route_command(payload):
-            if (isinstance(payload, dict) and
-                    payload.get('action') == 'capture_test_snapshot'):
-                if snapshot_service is None:
-                    mqtt_publisher.publish_command_result(
-                        payload.get('command_id'),
-                        'capture_test_snapshot', 'failed',
-                        'Snapshot service is disabled'
-                    )
-                    return False
-                # SnapshotCoordinator sends queued/completed/failed only after
-                # the real capture state changes. Do not let CommandHandler send
-                # a false "completed" result immediately.
-                return snapshot_service.handle_mqtt_command(payload)
-            return cmd_handler.handle(payload)
-
-        mqtt_publisher._command_callback = route_command
+        mqtt_publisher._command_callback = cmd_handler.handle
         mqtt_publisher.start()
 
     global pyds
@@ -823,20 +772,22 @@ def main():
                 if is_vehicle and valid_track and in_analysis:
                     analysis_objects.append(item)
                     raw_counts[class_name] += 1
-                    if debug_diagnostics:
-                        area = float(rect.width * rect.height)
-                        conf = float(obj_meta.confidence) if float(obj_meta.confidence) >= 0.0 else None
-                        trk_conf = getattr(obj_meta, 'tracker_confidence', None)
-                        if trk_conf is not None:
-                            try:
-                                trk_conf = float(trk_conf)
-                            except (TypeError, ValueError):
-                                trk_conf = None
-                        obj_diagnostics[track_id] = {
-                            'det_conf': conf,
-                            'trk_conf': trk_conf,
-                            'area': area
-                        }
+                    # Luôn thu thập (không phụ thuộc --debug-diagnostics) vì bộ lọc tốc độ
+                    # --min-detector-confidence / --min-tracker-confidence / --max-bbox-area-change dùng dữ liệu này.
+                    # Frame chỉ có tracker (interval>0) có confidence < 0 -> None -> không bị lọc.
+                    area = float(rect.width * rect.height)
+                    conf = float(obj_meta.confidence) if float(obj_meta.confidence) >= 0.0 else None
+                    trk_conf = getattr(obj_meta, 'tracker_confidence', None)
+                    if trk_conf is not None:
+                        try:
+                            trk_conf = float(trk_conf)
+                        except (TypeError, ValueError):
+                            trk_conf = None
+                    obj_diagnostics[track_id] = {
+                        'det_conf': conf,
+                        'trk_conf': trk_conf,
+                        'area': area
+                    }
                 metadata.append((
                     obj_meta, track_id, class_name,
                     is_vehicle and valid_track and in_analysis
@@ -918,9 +869,7 @@ def main():
             # Dùng tập track đã được xác nhận (hysteresis confirmed) từ RoiPresenceCounter để tính mật độ
             metrics = analyzer.analyze(event_time, presence, speeds)
             metrics['speed_by_class'] = speed_by_class
-            metrics['counts_by_class'] = dict(presence['current_by_class'])
-            metrics['current_by_class'] = dict(presence['current_by_class'])
-            metrics['current_vehicle_count'] = presence['current_total']
+            # counts_by_class / current_vehicle_count do analyzer trả về (đã trừ xe trong vùng loại trừ)
             last_metrics[0] = metrics
             snapshot_context_by_source[int(frame_meta.source_id)] = dict(metrics)
             if snapshot_service is not None:
@@ -938,21 +887,6 @@ def main():
                         snapshot_service.request_manual_snapshot(_cid)
                 except Exception as _terr:
                     print('[PIPELINE] Snapshot trigger error: %s' % _terr)
-
-            # Fix V3 & V7: Lắng nghe trigger chụp ảnh preview từ Agent (không block pad probe)
-            if os.path.exists(PREVIEW_TRIGGER_FILE):
-                try:
-                    if os.path.exists(PREVIEW_TRIGGER_FILE):
-                        os.remove(PREVIEW_TRIGGER_FILE)
-                    if pyds is not None and not preview_frame_queue.full():
-                        surf = pyds.get_nvds_buf_surface(hash(buffer), int(frame_meta.batch_id))
-                        # Fix V7: Copy nhanh mảng NumPy trên RAM (< 1ms), đẩy sang worker thread nền nén JPEG và ghi file!
-                        surf_copy = surf.copy()
-                        preview_frame_queue.put_nowait((surf_copy, LATEST_PREVIEW_FILE))
-                        if hasattr(pyds, 'unmap_nvds_buf_surface'):
-                            pyds.unmap_nvds_buf_surface(hash(buffer), int(frame_meta.batch_id))
-                except Exception as _perr:
-                    print('[PIPELINE] Preview trigger error: %s' % _perr)
 
             for obj_meta, track_id, class_name, should_display in metadata:
                 rect = obj_meta.rect_params
@@ -1079,6 +1013,49 @@ def main():
     tracker.get_static_pad('src').add_probe(
         Gst.PadProbeType.BUFFER, tracker_probe
     )
+
+    preview_format_warned = [False]
+
+    def preview_probe(pad, info):
+        """Chụp 1 frame sạch (chưa vẽ OSD) cho WebGIS vẽ ROI khi Agent yêu cầu.
+
+        Đặt ở sink pad của nvdsosd vì tại đây buffer đã là RGBA (pyds.get_nvds_buf_surface
+        chỉ đọc được RGBA; đầu ra tracker là NV12 nên không đọc được).
+        """
+        if not os.path.exists(PREVIEW_TRIGGER_FILE):
+            return Gst.PadProbeReturn.OK
+        buffer = info.get_buffer()
+        if not buffer or preview_frame_queue.full():
+            return Gst.PadProbeReturn.OK
+        try:
+            os.remove(PREVIEW_TRIGGER_FILE)
+        except OSError:
+            pass
+        try:
+            caps = pad.get_current_caps()
+            fmt = caps.get_structure(0).get_string('format') if caps is not None else None
+            if fmt != 'RGBA':
+                if not preview_format_warned[0]:
+                    print('[PIPELINE] Preview requires RGBA at osd sink pad, got %s' % fmt, file=sys.stderr)
+                    preview_format_warned[0] = True
+                return Gst.PadProbeReturn.OK
+            batch_meta = pyds.gst_buffer_get_nvds_batch_meta(hash(buffer))
+            if not batch_meta or not batch_meta.frame_meta_list:
+                return Gst.PadProbeReturn.OK
+            frame_meta = pyds.NvDsFrameMeta.cast(batch_meta.frame_meta_list.data)
+            batch_id = int(frame_meta.batch_id)
+            surface = pyds.get_nvds_buf_surface(hash(buffer), batch_id)
+            try:
+                # Copy nhanh sang RAM; nén JPEG và ghi file ở worker nền, không chặn luồng GStreamer
+                preview_frame_queue.put_nowait((np.array(surface, copy=True, order='C'), LATEST_PREVIEW_FILE))
+            finally:
+                if hasattr(pyds, 'unmap_nvds_buf_surface'):
+                    pyds.unmap_nvds_buf_surface(hash(buffer), batch_id)
+        except Exception as _perr:
+            print('[PIPELINE] Preview capture error: %s' % _perr)
+        return Gst.PadProbeReturn.OK
+
+    osd.get_static_pad('sink').add_probe(Gst.PadProbeType.BUFFER, preview_probe)
 
     snapshot_pad = None
     snapshot_probe_id = None

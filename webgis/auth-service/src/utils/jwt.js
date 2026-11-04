@@ -1,6 +1,10 @@
 import jwt from "jsonwebtoken";
 
-const JWT_SECRET = process.env.JWT_SECRET || "super_secret_jwt_key_traffic_gis_2026_change_in_production";
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  // Không dùng khóa mặc định: khóa lộ trong mã nguồn cho phép giả mạo token bất kỳ
+  throw new Error("Thiếu JWT_SECRET trong webgis/auth-service/.env (backend FastAPI dùng chung khóa này).");
+}
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
 
 export const signToken = (payload) => {

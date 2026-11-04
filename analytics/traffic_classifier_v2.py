@@ -75,57 +75,70 @@ class ContextAwareTrafficStateModel(TrafficStateModel):
         self.midblock_free_s = float(midblock_free_threshold_s)
         self.midblock_slow_s = float(midblock_slow_threshold_s)
 
-        # Lưu vết thời điểm vào ROI của từng track_id: {track_id: entry_time}
+        # Thời điểm vào ROI của từng track: {track_id: entry_time}
         self._track_entry_times = {}
+        # Thời điểm BẮT ĐẦU DỪNG (tốc độ < stopped_speed) của từng track đang dừng: {track_id: stop_time}
+        self._track_stop_since = {}
         # Lưu vết dwell-time gần nhất để báo cáo telemetry
-        self._last_dwell_stats = {
+        self._last_dwell_stats = self._empty_dwell_stats()
+
+    @staticmethod
+    def _empty_dwell_stats():
+        return {
             'max_dwell_s': 0.0,
             'mean_dwell_s': 0.0,
+            'median_dwell_s': 0.0,
             'stopped_dwell_max_s': 0.0,
+            'stopped_dwell_median_s': 0.0,
             'tracked_in_roi_count': 0,
         }
 
+    @staticmethod
+    def _median(values):
+        ordered = sorted(values)
+        n = len(ordered)
+        if n == 0:
+            return 0.0
+        mid = n // 2
+        return ordered[mid] if n % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
+
     def update_dwell_times(self, active_track_ids, timestamp, stopped_track_ids=None):
-        """Cập nhật dwell time cho các xe đang hiện diện trong Analysis ROI."""
+        """Cập nhật thời gian lưu (dwell) và thời gian dừng của các xe trong Analysis ROI.
+
+        - dwell của một xe  = t_hiện_tại - t_vào_ROI
+        - thời gian dừng    = t_hiện_tại - t_bắt_đầu_dừng (KHÔNG tính quãng thời gian xe còn chạy)
+        Phân loại dùng TRUNG VỊ (median) để một xe ngoại lai (xe đỗ lề, xe chết máy) không
+        quyết định trạng thái của cả đoạn đường; giá trị max vẫn được báo cáo để giám sát.
+        """
         now = float(timestamp)
         active_set = set(int(t) for t in active_track_ids) if active_track_ids else set()
         stopped_set = set(int(t) for t in stopped_track_ids) if stopped_track_ids else set()
+        stopped_set &= active_set
 
-        # Đăng ký entry_time cho các xe mới vào ROI
         for tid in active_set:
-            if tid not in self._track_entry_times:
-                self._track_entry_times[tid] = now
+            self._track_entry_times.setdefault(tid, now)
+        for tid in stopped_set:
+            self._track_stop_since.setdefault(tid, now)
 
-        # Dọn dẹp các track đã rời khỏi ROI
-        prune_ids = [tid for tid in self._track_entry_times if tid not in active_set]
-        for tid in prune_ids:
+        # Xe rời ROI -> xóa; xe chạy lại -> reset mốc dừng
+        for tid in [t for t in self._track_entry_times if t not in active_set]:
             del self._track_entry_times[tid]
+        for tid in [t for t in self._track_stop_since if t not in stopped_set]:
+            del self._track_stop_since[tid]
 
-        # Tính toán thống kê Dwell Time
         if not active_set:
-            self._last_dwell_stats = {
-                'max_dwell_s': 0.0,
-                'mean_dwell_s': 0.0,
-                'stopped_dwell_max_s': 0.0,
-                'tracked_in_roi_count': 0,
-            }
+            self._last_dwell_stats = self._empty_dwell_stats()
             return self._last_dwell_stats
 
-        dwell_list = [now - self._track_entry_times[tid] for tid in active_set if tid in self._track_entry_times]
-        stopped_dwell_list = [
-            now - self._track_entry_times[tid]
-            for tid in stopped_set
-            if tid in self._track_entry_times
-        ]
-
-        max_dwell = max(dwell_list) if dwell_list else 0.0
-        mean_dwell = (sum(dwell_list) / float(len(dwell_list))) if dwell_list else 0.0
-        stopped_max = max(stopped_dwell_list) if stopped_dwell_list else 0.0
+        dwell_list = [now - self._track_entry_times[tid] for tid in active_set]
+        stopped_list = [now - self._track_stop_since[tid] for tid in stopped_set]
 
         self._last_dwell_stats = {
-            'max_dwell_s': round(max_dwell, 1),
-            'mean_dwell_s': round(mean_dwell, 1),
-            'stopped_dwell_max_s': round(stopped_max, 1),
+            'max_dwell_s': round(max(dwell_list), 1),
+            'mean_dwell_s': round(sum(dwell_list) / float(len(dwell_list)), 1),
+            'median_dwell_s': round(self._median(dwell_list), 1),
+            'stopped_dwell_max_s': round(max(stopped_list), 1) if stopped_list else 0.0,
+            'stopped_dwell_median_s': round(self._median(stopped_list), 1) if stopped_list else 0.0,
             'tracked_in_roi_count': len(active_set),
         }
         return self._last_dwell_stats
@@ -179,8 +192,10 @@ class ContextAwareTrafficStateModel(TrafficStateModel):
             return self.UNKNOWN
 
         stats = dwell_stats or self._last_dwell_stats
-        max_dwell = stats.get('max_dwell_s', 0.0)
-        stopped_max_dwell = stats.get('stopped_dwell_max_s', 0.0)
+        # Đại lượng đại diện cho cả đoạn đường: trung vị (bền vững với một xe ngoại lai).
+        # Tên biến giữ nguyên để đối chiếu với tài liệu thuật toán.
+        max_dwell = stats.get('median_dwell_s', stats.get('max_dwell_s', 0.0))
+        stopped_max_dwell = stats.get('stopped_dwell_median_s', stats.get('stopped_dwell_max_s', 0.0))
 
         # -------------------------------------------------------------
         # BẢO VỆ 1: Low Vehicle Count Guard & Stationary Incident (Fix A3)
@@ -283,7 +298,7 @@ class ContextAwareTrafficStateModel(TrafficStateModel):
 
         # Thành phần 2: Tỷ lệ dừng (0 - 30 điểm)
         # Nếu đang trong thời gian ân hạn đèn đỏ ở nút giao, giảm bớt điểm phạt dừng
-        stopped_dwell = stats.get('stopped_dwell_max_s', 0.0)
+        stopped_dwell = stats.get('stopped_dwell_median_s', stats.get('stopped_dwell_max_s', 0.0))
         if self.context == self.CONTEXT_SIGNALIZED and stopped_dwell <= self.signalized_grace_s:
             # Trong 30s đèn đỏ đầu tiên, tỷ lệ dừng không bị phạt tối đa
             effective_stopped_ratio = stopped_ratio * 0.3
@@ -337,18 +352,28 @@ class ContextAwareTrafficAnalyzer(TrafficAnalyzer):
         )
 
     def analyze(self, timestamp, presence_snapshot, speeds):
-        """Phân tích giao thông có tích hợp Dwell-Time và lọc xe di chuyển >= 1.5m."""
-        roi_track_ids = presence_snapshot.get('current_track_ids')
-        active_ids = set(roi_track_ids) if roi_track_ids else set(speeds.keys())
+        """Phân tích giao thông có tích hợp Dwell-Time.
 
-        # Lọc các xe dừng: vận tốc < 5.0 km/h
+        Tập xe dùng cho dwell = xe đã xác nhận trong ROI, trừ xe ở vùng loại trừ.
+        Tập xe "đang dừng" dùng CÙNG định nghĩa với stopped_ratio của lớp cha:
+        đã đo được tốc độ, tốc độ < stopped_speed và đã từng di chuyển (has_moved),
+        để xe đỗ cố định từ đầu không bị tính là xe dừng do ùn tắc.
+        """
+        roi_track_ids = presence_snapshot.get('current_track_ids')
+        if roi_track_ids is None:
+            roi_track_ids = speeds.keys()
+        active_ids = set(int(t) for t in roi_track_ids) - self.excluded_track_ids(presence_snapshot)
+
         stopped_ids = set()
         for tid in active_ids:
             sp_info = speeds.get(tid)
-            if sp_info is not None:
-                sp_val = sp_info.get('speed_kmh') if isinstance(sp_info, dict) else sp_info
-                if sp_val is not None and float(sp_val) < self._state_model.stopped_speed_kmh:
-                    stopped_ids.add(tid)
+            if not isinstance(sp_info, dict):
+                continue
+            sp_val = sp_info.get('speed_kmh')
+            if self._ignore_never_moved and not sp_info.get('has_moved', True):
+                continue
+            if sp_val is not None and float(sp_val) < self._state_model.stopped_speed_kmh:
+                stopped_ids.add(tid)
 
         # Cập nhật Dwell-Time vào StateModel V2 nếu là ContextAwareTrafficStateModel
         dwell_stats = None
@@ -365,8 +390,10 @@ class ContextAwareTrafficAnalyzer(TrafficAnalyzer):
         # Bổ sung các thông số Dwell-Time và thuật toán vào telemetry
         if dwell_stats:
             metrics['dwell_time_avg_s'] = dwell_stats.get('mean_dwell_s', 0.0)
+            metrics['median_dwell_s'] = dwell_stats.get('median_dwell_s', 0.0)
             metrics['max_dwell_s'] = dwell_stats.get('max_dwell_s', 0.0)
             metrics['stopped_dwell_max_s'] = dwell_stats.get('stopped_dwell_max_s', 0.0)
+            metrics['stopped_dwell_median_s'] = dwell_stats.get('stopped_dwell_median_s', 0.0)
             metrics['traffic_context'] = getattr(self._state_model, 'context', 'signalized')
             metrics['algorithm_version'] = 'v2_dwell_time'
 

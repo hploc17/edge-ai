@@ -85,8 +85,8 @@ def _parse_port(val, default=8883):
 
 MQTT_HOST = os.getenv('MQTT_HOST', '829e7cb26c594257a7470e5a5af58064.s1.eu.hivemq.cloud')
 MQTT_PORT = _parse_port(os.getenv('MQTT_PORT', '8883'), 8883)
-MQTT_USERNAME = os.getenv('MQTT_USER', 'admin')
-MQTT_PASSWORD = os.getenv('MQTT_PASS', '12345678')
+MQTT_USERNAME = os.getenv('MQTT_USER', '')
+MQTT_PASSWORD = os.getenv('MQTT_PASS', '')  # Bắt buộc khai báo trong .env (không viết cứng mật khẩu)
 MQTT_AGENT_CLIENT_ID = os.getenv('MQTT_AGENT_CLIENT_ID', '%s-agent' % EDGE_ID)
 MQTT_PIPELINE_CLIENT_ID = os.getenv('MQTT_PIPELINE_CLIENT_ID', '%s-pipeline' % EDGE_ID)
 MQTT_CLIENT_ID = os.getenv('MQTT_CLIENT_ID', '%s-edge-pub' % EDGE_ID)
@@ -94,6 +94,10 @@ MQTT_CLIENT_ID = os.getenv('MQTT_CLIENT_ID', '%s-edge-pub' % EDGE_ID)
 HEARTBEAT_INTERVAL_S = 5.0
 TELEMETRY_INTERVAL_S = 1.0
 DEFAULT_COMMAND_TTL = float(os.getenv('COMMAND_TTL_SECONDS', '30.0'))
+# Lệch đồng hồ quá ngưỡng này => đồng hồ Jetson chưa đồng bộ NTP (vd khởi động không có mạng).
+# Khi đó không thể đánh giá tuổi lệnh: chấp nhận lệnh và cảnh báo, thay vì từ chối MỌI lệnh.
+# An toàn vì client dùng clean_session=True và lệnh không retain, broker không giao lại lệnh cũ.
+CLOCK_SKEW_LIMIT_S = float(os.getenv('COMMAND_CLOCK_SKEW_LIMIT_SECONDS', '600'))
 ENABLE_EDGE_FORECAST = os.getenv('ENABLE_EDGE_FORECAST', '0').lower() in ('1', 'true', 'yes')
 
 
@@ -127,6 +131,20 @@ def parse_timestamp_seconds(value):
         except ValueError:
             pass
     return None
+
+
+def command_expiry(cmd_ts, ttl):
+    """Trả về (expired, age_seconds). age=None nếu không đọc được timestamp."""
+    ts_sec = parse_timestamp_seconds(cmd_ts)
+    if ts_sec is None:
+        return False, None
+    age = time.time() - ts_sec
+    if abs(age) > CLOCK_SKEW_LIMIT_S:
+        # Log ASCII: service systemd trên Jetson có thể chạy với locale C (Python 3.6 lỗi khi in tiếng Việt)
+        print('[MQTT] [WARN] Clock skew %.0fs between server and Jetson: TTL check skipped. '
+              'Enable NTP on Jetson (sudo timedatectl set-ntp true).' % age)
+        return False, age
+    return age > float(ttl), age
 
 
 class MQTTPublisher(object):
@@ -319,6 +337,11 @@ class MQTTPublisher(object):
             'congestion_score': int(metrics.get('congestion_score', 0)),
             'edge_metrics': edge_metrics,
         }
+        for key in ('algorithm_version', 'traffic_context', 'is_incident', 'excluded_vehicle_count',
+                    'dwell_time_avg_s', 'median_dwell_s', 'max_dwell_s',
+                    'stopped_dwell_max_s', 'stopped_dwell_median_s'):
+            if key in metrics:
+                payload[key] = metrics[key]
         if ENABLE_EDGE_FORECAST and 'forecast' in metrics:
             payload['forecast'] = metrics['forecast']
         self._publish_raw(self._topic_telemetry, json.dumps(payload), qos=0)
@@ -669,21 +692,19 @@ class MQTTPublisher(object):
             cmd_ts = data.get('timestamp') if isinstance(data, dict) else None
             ttl = float(data.get('ttl', DEFAULT_COMMAND_TTL)) if isinstance(data, dict) else DEFAULT_COMMAND_TTL
 
-            # L8: Kiểm tra TTL - từ chối các lệnh quá hạn do broker giữ hoặc mạng trễ
+            # L8: Kiểm tra TTL - từ chối các lệnh quá hạn do mạng trễ (có xử lý lệch đồng hồ)
             if cmd_ts is not None:
-                ts_sec = parse_timestamp_seconds(cmd_ts)
-                if ts_sec is not None:
-                    age = time.time() - ts_sec
-                    if age > ttl:
-                        print('[MQTT] Command %s (id=%s) expired: age=%.1fs > ttl=%.1fs' %
-                              (cmd_action, cmd_id, age, ttl))
-                        self.publish_command_result(
-                            command_id=cmd_id,
-                            action=cmd_action,
-                            status='expired',
-                            message='Command expired (age=%.1fs > ttl=%.1fs)' % (age, ttl),
-                        )
-                        return
+                expired, age = command_expiry(cmd_ts, ttl)
+                if expired:
+                    print('[MQTT] Command %s (id=%s) expired: age=%.1fs > ttl=%.1fs' %
+                          (cmd_action, cmd_id, age, ttl))
+                    self.publish_command_result(
+                        command_id=cmd_id,
+                        action=cmd_action,
+                        status='expired',
+                        message='Command expired (age=%.1fs > ttl=%.1fs)' % (age, ttl),
+                    )
+                    return
 
             print('[MQTT] Received command: %s (id=%s)' % (cmd_action, cmd_id))
             try:

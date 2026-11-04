@@ -6,7 +6,7 @@ Compatible with Python 3.6 (JetPack 4.x).
 """
 
 from __future__ import print_function
-from collections import defaultdict, deque
+from collections import Counter
 from spatial.geometry_utils import point_in_polygon, bbox_bottom_center
 
 
@@ -21,6 +21,10 @@ class RoiPresenceCounter(object):
 
     A track that disappears from the tracker entirely is removed after
     lost_timeout_seconds regardless of its confirmed state.
+
+    Số đếm theo lớp được TÍNH LẠI từ tập track đang confirmed ở mỗi lần snapshot(),
+    lớp của mỗi track là lớp được bỏ phiếu nhiều nhất trong lịch sử của track đó.
+    Cách này không bị "trôi" khi detector đổi nhãn của cùng một xe (vd motorbike <-> bicycle).
     """
 
     def __init__(self, analysis_roi, vehicle_classes,
@@ -34,7 +38,6 @@ class RoiPresenceCounter(object):
         self._lost_timeout_s = float(lost_timeout_seconds)
 
         self._tracks = {}
-        self._confirmed_by_class = defaultdict(int)
         self._raw_tracks = 0
 
     def set_raw_tracks(self, count):
@@ -44,6 +47,16 @@ class RoiPresenceCounter(object):
         """Hot-reload new Analysis ROI polygon dynamically."""
         self._roi = list(analysis_roi)
         print("[ROI] RoiPresenceCounter geometry updated to %d points" % len(self._roi))
+
+    def reset(self):
+        """Xóa toàn bộ trạng thái track (dùng khi đổi ROI/hiệu chuẩn)."""
+        self._tracks.clear()
+        self._raw_tracks = 0
+
+    @staticmethod
+    def _track_class(state):
+        votes = state['class_votes']
+        return votes.most_common(1)[0][0] if votes else state['class_name']
 
     def update(self, detection_objects, timestamp):
         timestamp = float(timestamp)
@@ -65,15 +78,19 @@ class RoiPresenceCounter(object):
             if state is None:
                 state = {
                     'class_name': class_name,
+                    'class_votes': Counter(),
                     'confirmed': False,
                     'in_roi_since': None,
                     'out_roi_since': None,
                     'last_seen': timestamp,
+                    'position': point,
                 }
                 self._tracks[track_id] = state
 
             state['last_seen'] = timestamp
             state['class_name'] = class_name
+            state['class_votes'][class_name] += 1
+            state['position'] = point
 
             if in_analysis:
                 state['out_roi_since'] = None
@@ -82,11 +99,10 @@ class RoiPresenceCounter(object):
                         state['in_roi_since'] = timestamp
                     elif timestamp - state['in_roi_since'] >= self._enter_confirm_s:
                         state['confirmed'] = True
-                        self._confirmed_by_class[class_name] += 1
                         events.append({
                             'event': 'confirmed',
                             'track_id': track_id,
-                            'class_name': class_name,
+                            'class_name': self._track_class(state),
                             'timestamp': timestamp,
                         })
             else:
@@ -96,14 +112,11 @@ class RoiPresenceCounter(object):
                         state['out_roi_since'] = timestamp
                     elif timestamp - state['out_roi_since'] >= self._exit_confirm_s:
                         state['confirmed'] = False
-                        self._confirmed_by_class[class_name] = max(
-                            0, self._confirmed_by_class[class_name] - 1
-                        )
                         state['out_roi_since'] = None
                         events.append({
                             'event': 'released',
                             'track_id': track_id,
-                            'class_name': class_name,
+                            'class_name': self._track_class(state),
                             'timestamp': timestamp,
                         })
 
@@ -114,14 +127,10 @@ class RoiPresenceCounter(object):
             age = timestamp - state['last_seen']
             if age > self._lost_timeout_s:
                 if state['confirmed']:
-                    class_name = state['class_name']
-                    self._confirmed_by_class[class_name] = max(
-                        0, self._confirmed_by_class[class_name] - 1
-                    )
                     events.append({
                         'event': 'released',
                         'track_id': track_id,
-                        'class_name': class_name,
+                        'class_name': self._track_class(state),
                         'timestamp': timestamp,
                     })
                 remove_ids.append(track_id)
@@ -132,18 +141,26 @@ class RoiPresenceCounter(object):
         return events
 
     def snapshot(self):
-        classes = sorted(self._vehicle_classes)
-        by_class = dict(
-            (name, int(self._confirmed_by_class[name]))
-            for name in classes
-        )
-        confirmed_ids = [
-            tid for tid, state in self._tracks.items()
-            if state.get('confirmed')
-        ]
+        by_class = dict((name, 0) for name in sorted(self._vehicle_classes))
+        confirmed_ids = []
+        track_positions = {}
+        track_classes = {}
+        for tid, state in self._tracks.items():
+            if not state.get('confirmed'):
+                continue
+            cls = self._track_class(state)
+            confirmed_ids.append(tid)
+            track_positions[tid] = state['position']
+            track_classes[tid] = cls
+            if cls in by_class:
+                by_class[cls] += 1
         return {
             'current_total': sum(by_class.values()),
             'current_by_class': by_class,
             'current_track_ids': confirmed_ids,
+            # Vị trí đáy-giữa bbox (pixel) và lớp của từng track đang confirmed,
+            # dùng cho vùng loại trừ (exclusion_polygons) trong TrafficAnalyzer
+            'track_positions': track_positions,
+            'track_classes': track_classes,
             'raw_tracks': self._raw_tracks,
         }

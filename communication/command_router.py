@@ -27,11 +27,12 @@ import os
 import threading
 import time
 
+command_expiry = None
 try:
-    from communication.mqtt_client import parse_timestamp_seconds
+    from communication.mqtt_client import parse_timestamp_seconds, command_expiry
 except ImportError:
     try:
-        from mqtt_client import parse_timestamp_seconds
+        from mqtt_client import parse_timestamp_seconds, command_expiry
     except ImportError:
         def parse_timestamp_seconds(value):
             if value is None:
@@ -153,23 +154,21 @@ class CommandHandler(object):
         action = _extract_action(data)
         command_id = _extract_command_id(data)
 
-        # ── TTL Check: Kiểm tra hạn sống của lệnh (Fix L8) ──
+        # ── TTL Check: Kiểm tra hạn sống của lệnh (Fix L8, có xử lý lệch đồng hồ Jetson) ──
         cmd_ts = data.get('timestamp')
         ttl = float(data.get('ttl', self._command_ttl))
-        if cmd_ts is not None and parse_timestamp_seconds is not None:
-            ts_sec = parse_timestamp_seconds(cmd_ts)
-            if ts_sec is not None:
-                age = time.time() - ts_sec
-                if age > ttl:
-                    print('[CMD] Command expired (age=%.1fs > ttl=%.1fs): action=%s command_id=%s' %
-                          (age, ttl, action, command_id))
-                    self._publisher.publish_command_result(
-                        command_id=command_id,
-                        action=action or 'unknown',
-                        status='expired',
-                        message='Command expired (age=%.1fs > ttl=%.1fs)' % (age, ttl),
-                    )
-                    return
+        if cmd_ts is not None and command_expiry is not None:
+            expired, age = command_expiry(cmd_ts, ttl)
+            if expired:
+                print('[CMD] Command expired (age=%.1fs > ttl=%.1fs): action=%s command_id=%s' %
+                      (age, ttl, action, command_id))
+                self._publisher.publish_command_result(
+                    command_id=command_id,
+                    action=action or 'unknown',
+                    status='expired',
+                    message='Command expired (age=%.1fs > ttl=%.1fs)' % (age, ttl),
+                )
+                return
 
         # ── Deduplication: Chống lặp lệnh trùng lặp trong 60 giây (L1) ──
         if command_id:

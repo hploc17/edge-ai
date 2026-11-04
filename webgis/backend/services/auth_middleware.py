@@ -10,9 +10,29 @@ from fastapi import Request, HTTPException, Security, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import os
 
-# Cấu hình JWT Secret đồng bộ với Express
-JWT_SECRET = os.getenv("JWT_SECRET", "super_secret_jwt_key_traffic_gis_2026_change_in_production")
+import hmac
+
+# JWT_SECRET được config.py nạp và kiểm tra (dùng chung với Express auth-service)
+from config import JWT_SECRET, EDGE_TOKEN
 JWT_ALGORITHM = "HS256"
+
+
+def verify_edge_token(candidate: Optional[str]) -> bool:
+    """So khớp token thiết bị Edge (hằng thời gian). Từ chối nếu server chưa cấu hình EDGE_TOKEN."""
+    if not EDGE_TOKEN or not candidate:
+        return False
+    return hmac.compare_digest(candidate.strip().encode("utf-8"), EDGE_TOKEN.encode("utf-8"))
+
+
+def edge_token_from_request(request: Request, x_edge_token: Optional[str] = None) -> str:
+    """Lấy token thiết bị từ X-Edge-Token, hoặc từ 'Authorization: Bearer <EDGE_TOKEN>' (tương thích ngược)."""
+    token = x_edge_token or request.headers.get("x-edge-token") or ""
+    if token:
+        return token
+    auth_hdr = request.headers.get("authorization") or ""
+    if auth_hdr.startswith("Bearer "):
+        return auth_hdr[7:]
+    return ""
 
 # Hằng số phân quyền dùng chung
 STAFF = ["ADMIN", "MANAGER"]

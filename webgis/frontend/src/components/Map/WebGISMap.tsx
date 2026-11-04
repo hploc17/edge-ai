@@ -480,10 +480,10 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
                 <div style="font-size: 11px; line-height: 1.6; color: #334155; background: #f8fafc; padding: 8px; border-radius: 8px; border: 1px solid #e2e8f0;">
                   <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
                     <span style="color: #64748b;">🔥 Độ nhiệt kẹt xe:</span>
-                    <b style="color: ${p.congestion_score >= 60 ? '#ef4444' : p.congestion_score >= 35 ? '#f59e0b' : '#10b981'}; font-family: monospace;">${p.congestion_score || 0} / 100</b>
+                    <b style="color: ${p.congestion_score >= 65 ? '#ef4444' : p.congestion_score >= 35 ? '#f59e0b' : '#10b981'}; font-family: monospace;">${p.congestion_score || 0} / 100</b>
                   </div>
                   <div style="width: 100%; height: 5px; background: #e2e8f0; border-radius: 999px; overflow: hidden; margin-bottom: 6px;">
-                    <div style="height: 100%; width: ${Math.min(100, Math.max(5, p.congestion_score || 0))}%; background: ${p.congestion_score >= 60 ? 'linear-gradient(90deg, #f97316, #ef4444)' : p.congestion_score >= 35 ? '#f59e0b' : '#10b981'}; border-radius: 999px;"></div>
+                    <div style="height: 100%; width: ${Math.min(100, Math.max(5, p.congestion_score || 0))}%; background: ${p.congestion_score >= 65 ? 'linear-gradient(90deg, #f97316, #ef4444)' : p.congestion_score >= 35 ? '#f59e0b' : '#10b981'}; border-radius: 999px;"></div>
                   </div>
                   <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
                     <span style="color: #64748b;">📏 Chiều dài vùng nhiệt:</span>

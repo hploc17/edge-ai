@@ -45,6 +45,18 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
+# Nạp .env gốc dự án (không ghi đè biến đã có) để lấy MQTT_PASS / EDGE_TOKEN, không viết cứng mật khẩu
+_ROOT_ENV = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), '.env') \
+    if os.path.basename(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) == 'webgis' \
+    else os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
+if os.path.isfile(_ROOT_ENV):
+    with open(_ROOT_ENV, encoding='utf-8') as _env_file:
+        for _line in _env_file:
+            _line = _line.strip()
+            if _line and not _line.startswith('#') and '=' in _line:
+                _key, _val = _line.split('=', 1)
+                os.environ.setdefault(_key.strip(), _val.split(' #')[0].strip().strip('"\''))
+
 try:
     from analytics.traffic_classifier import TrafficStateModel
 except Exception:
@@ -60,7 +72,7 @@ SEGMENT_ID = os.getenv('SEGMENT_ID', 'segment-001')
 MQTT_HOST = os.getenv('MQTT_HOST', '829e7cb26c594257a7470e5a5af58064.s1.eu.hivemq.cloud')
 MQTT_PORT = int(os.getenv('MQTT_PORT', '8883'))
 MQTT_USER = os.getenv('MQTT_USER', 'admin')
-MQTT_PASS = os.getenv('MQTT_PASS', '12345678')
+MQTT_PASS = os.getenv('MQTT_PASS', '')
 MQTT_CLIENT_ID = os.getenv('MQTT_CLIENT_ID', 'jetson-nano-simulator-%s' % uuid.uuid4().hex[:6])
 
 TOPIC_TELEMETRY = 'traffic/%s/telemetry' % EDGE_ID
@@ -401,7 +413,7 @@ class JetsonSimulator:
                 data=body,
                 headers={
                     'Content-Type': f'multipart/form-data; boundary={boundary}',
-                    'X-Edge-Token': 'dev-edge-token',
+                    'X-Edge-Token': os.getenv('EDGE_TOKEN', ''),
                 },
                 method='POST'
             )

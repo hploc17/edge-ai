@@ -11,7 +11,8 @@ from fastapi import APIRouter, UploadFile, File, Form, Header, Request, HTTPExce
 import jwt
 from services.data_store import store
 from services.websocket_manager import ws_manager
-from services.auth_middleware import JWT_SECRET, JWT_ALGORITHM, STAFF, require_staff
+from services.auth_middleware import (JWT_SECRET, JWT_ALGORITHM, STAFF, require_staff,
+                                      verify_edge_token, edge_token_from_request)
 
 router = APIRouter(prefix="/api/v1", tags=["Snapshots & Camera Capture"])
 
@@ -47,15 +48,8 @@ async def _handle_snapshot_upload(
             detail="Missing image file in multipart upload (expected key 'image', 'snapshot', or 'file')"
         )
 
-    # 1. Xác thực nguồn upload (Fix S2, S3): Chỉ chấp nhận X-Edge-Token hợp lệ hoặc Staff Bearer JWT
-    token_candidate = x_edge_token or request.headers.get("x-edge-token") or request.headers.get("X-Edge-Token")
-    expected_token = os.getenv("EDGE_TOKEN", "dev-edge-token")
-
-    is_authenticated = False
-    if token_candidate:
-        # So sánh hằng thời gian chống timing-attack (Fix S2)
-        if hmac.compare_digest(token_candidate.strip().encode("utf-8"), expected_token.strip().encode("utf-8")):
-            is_authenticated = True
+    # 1. Xác thực nguồn upload: token thiết bị Edge (X-Edge-Token hoặc Bearer <EDGE_TOKEN>) hoặc JWT của Staff
+    is_authenticated = verify_edge_token(edge_token_from_request(request, x_edge_token))
 
     if not is_authenticated:
         auth_hdr = authorization or request.headers.get("authorization")

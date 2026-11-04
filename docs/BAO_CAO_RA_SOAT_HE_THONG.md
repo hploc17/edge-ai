@@ -3,7 +3,7 @@
 - **Ngày rà soát:** 04/11/2026
 - **Phạm vi:** toàn bộ mã nguồn trong `C:\KLTN\Project` (~23.000 dòng: Edge Jetson, WebGIS backend/auth/frontend, công cụ, tài liệu)
 - **Phương pháp:** đọc mã tĩnh và đối chiếu "hợp đồng" dữ liệu giữa các khối (MQTT, REST, file IPC). **Chưa chạy thử trên Jetson.** Những mục cần xác nhận trên thiết bị được đánh dấu *(cần kiểm chứng)*.
-- **Trạng thái:** chỉ báo cáo, **chưa sửa code**.
+- **Trạng thái:** đã xử lý ngày 04/11/2026. Xem kết quả tại [BAO_CAO_SUA_CHUA_HE_THONG.md](BAO_CAO_SUA_CHUA_HE_THONG.md).
 
 ---
 

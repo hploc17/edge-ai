@@ -219,13 +219,9 @@ async def receive_jetson_capture(
       - roi_setup: cache RAM (TTL 60s) + forward realtime qua WebSocket
       - manual / congestion: lưu vĩnh viễn vào disk
     """
-    # Xác thực X-Edge-Token bằng so sánh hằng thời gian (Fix S2)
-    import hmac as _hmac
-    import os as _os
-    expected_token = _os.getenv("EDGE_TOKEN", "dev-edge-token")
-    token_candidate = x_edge_token or request.headers.get("x-edge-token") or request.headers.get("X-Edge-Token") or ""
-
-    if not token_candidate or not _hmac.compare_digest(token_candidate.strip().encode("utf-8"), expected_token.strip().encode("utf-8")):
+    # Xác thực token thiết bị Edge bằng so sánh hằng thời gian
+    from services.auth_middleware import verify_edge_token, edge_token_from_request
+    if not verify_edge_token(edge_token_from_request(request, x_edge_token)):
         raise HTTPException(status_code=401, detail="Invalid or missing X-Edge-Token")
 
     # Kiểm tra thiết bị (chấp nhận cả approved nodes và pending nodes để phục vụ cấu hình ROI)

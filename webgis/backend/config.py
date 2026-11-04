@@ -6,11 +6,12 @@ from dotenv import load_dotenv
 BACKEND_DIR = Path(__file__).resolve().parent
 ROOT_DIR = BACKEND_DIR.parent.parent
 
-# Load .env if exists (support backend, webgis, or root folder)
+# Nạp .env theo thứ tự ưu tiên backend -> webgis -> gốc dự án. Không dừng ở file đầu tiên:
+# load_dotenv không ghi đè biến đã có, nên file đứng trước được ưu tiên còn file sau bổ sung
+# các khóa còn thiếu (MQTT_PASS, EDGE_TOKEN... thường chỉ khai báo ở .env gốc).
 for env_candidate in [BACKEND_DIR / ".env", BACKEND_DIR.parent / ".env", ROOT_DIR / ".env"]:
     if env_candidate.exists():
         load_dotenv(dotenv_path=env_candidate)
-        break
 
 # Đồng bộ JWT_SECRET với auth-service: hai dịch vụ BẮT BUỘC dùng chung một khóa ký token
 if not os.getenv("JWT_SECRET"):
@@ -27,6 +28,13 @@ if not os.getenv("JWT_SECRET"):
     except Exception:
         pass
 
+JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
+if not JWT_SECRET:
+    raise RuntimeError(
+        "Thiếu JWT_SECRET: backend phải dùng chung khóa ký token với auth-service. "
+        "Khai báo JWT_SECRET trong .env hoặc webgis/auth-service/.env."
+    )
+
 # Server Port & Host
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "8000"))
@@ -35,7 +43,7 @@ API_PORT = int(os.getenv("API_PORT", "8000"))
 MQTT_HOST = os.getenv("MQTT_HOST", "829e7cb26c594257a7470e5a5af58064.s1.eu.hivemq.cloud")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "8883"))
 MQTT_USER = os.getenv("MQTT_USER", "admin")
-MQTT_PASS = os.getenv("MQTT_PASS", "12345678")
+MQTT_PASS = os.getenv("MQTT_PASS", "")
 MQTT_CLIENT_ID = os.getenv("WEBGIS_MQTT_CLIENT_ID", "webgis-backend-hub")
 
 # Storage directory
@@ -45,7 +53,7 @@ SNAPSHOTS_DIR = DATA_DIR / "snapshots"
 SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Edge Authentication & Live Streaming Configuration
-EDGE_TOKEN = os.getenv("EDGE_TOKEN", "dev-edge-token")
+EDGE_TOKEN = os.getenv("EDGE_TOKEN", "").strip()
 LIVE_MAX_VIEWERS_PER_NODE = int(os.getenv("LIVE_MAX_VIEWERS_PER_NODE", "3"))
 LIVE_MAX_VIEWERS_TOTAL = int(os.getenv("LIVE_MAX_VIEWERS_TOTAL", "10"))
 LIVE_REQUIRE_AUTH = os.getenv("LIVE_REQUIRE_AUTH", "false").lower() in ("true", "1", "yes")

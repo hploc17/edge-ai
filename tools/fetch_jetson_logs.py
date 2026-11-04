@@ -44,7 +44,7 @@ if os.path.isfile(env_path):
 DEFAULT_HOST = os.getenv("MQTT_HOST", "829e7cb26c594257a7470e5a5af58064.s1.eu.hivemq.cloud")
 DEFAULT_PORT = int(os.getenv("MQTT_PORT", "8883"))
 DEFAULT_USER = os.getenv("MQTT_USER", "admin")
-DEFAULT_PASS = os.getenv("MQTT_PASS", "12345678")
+DEFAULT_PASS = os.getenv("MQTT_PASS", "")
 
 
 def fetch_logs_from_jetson(edge_id="edge-01", num_lines=100, timeout_s=10.0, output_file=None):

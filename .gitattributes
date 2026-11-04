@@ -1,0 +1,7 @@
+# Mã nguồn chạy trên Jetson (Linux): luôn giữ LF để script/py không lỗi khi copy sang
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.bat text eol=crlf

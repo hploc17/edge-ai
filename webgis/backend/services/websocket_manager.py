@@ -5,7 +5,7 @@ from fastapi import WebSocket
 import jwt
 import os
 
-JWT_SECRET = os.getenv("JWT_SECRET", "super_secret_jwt_key_traffic_gis_2026_change_in_production")
+from config import JWT_SECRET
 STAFF_ROLES = {"ADMIN", "MANAGER"}
 
 # Các sự kiện nhạy cảm chỉ gửi cho STAFF

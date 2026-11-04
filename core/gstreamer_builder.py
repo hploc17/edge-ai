@@ -256,11 +256,22 @@ def ensure_infer_config(infer_config_path):
     if found_lib:
         print('[INFO] Using YOLO custom parser lib: %s' % found_lib)
 
+    # nvinfer hiểu đường dẫn tương đối theo THƯ MỤC CHỨA FILE CONFIG, không theo CWD
+    config_dir = os.path.dirname(os.path.abspath(str(p)))
+
+    def _resolve_existing(value):
+        value = value.strip()
+        if not value:
+            return None
+        candidate = value if os.path.isabs(value) else os.path.join(config_dir, value)
+        return os.path.abspath(candidate) if os.path.isfile(candidate) else None
+
     # 2. Resolve model-engine-file
     engine_candidates = [
         '/workspace/1908/exp.engine',
         '/workspace/exp.engine',
         '/app/exp.engine',
+        os.path.join(config_dir, 'exp.engine'),
         str(ROOT / 'exp.engine'),
         str(ROOT / 'configs' / 'exp.engine'),
     ]
@@ -275,6 +286,7 @@ def ensure_infer_config(infer_config_path):
         '/workspace/1908/exp.onnx',
         '/workspace/exp.onnx',
         '/app/exp.onnx',
+        os.path.join(config_dir, 'exp.onnx'),
         str(ROOT / 'exp.onnx'),
         str(ROOT / 'configs' / 'exp.onnx'),
     ]
@@ -294,7 +306,7 @@ def ensure_infer_config(infer_config_path):
     found_label = None
     for cand in label_candidates:
         if os.path.isfile(cand):
-            found_label = cand
+            found_label = os.path.abspath(cand)
             break
 
     lines = content.splitlines()
@@ -303,24 +315,13 @@ def ensure_infer_config(infer_config_path):
         stripped = line.strip()
         if stripped.startswith('custom-lib-path=') and found_lib:
             new_lines.append('custom-lib-path=%s' % found_lib)
-        elif stripped.startswith('model-engine-file='):
-            cur_val = stripped.split('=', 1)[1].strip()
-            if not os.path.isfile(cur_val) and found_engine:
-                new_lines.append('model-engine-file=%s' % found_engine)
-            else:
-                new_lines.append(line)
-        elif stripped.startswith('onnx-file='):
-            cur_val = stripped.split('=', 1)[1].strip()
-            if not os.path.isfile(cur_val) and found_onnx:
-                new_lines.append('onnx-file=%s' % found_onnx)
-            else:
-                new_lines.append(line)
-        elif stripped.startswith('labelfile-path='):
-            cur_val = stripped.split('=', 1)[1].strip()
-            if not os.path.isfile(cur_val) and found_label:
-                new_lines.append('labelfile-path=%s' % found_label)
-            else:
-                new_lines.append(line)
+        elif stripped.startswith(('model-engine-file=', 'onnx-file=', 'labelfile-path=')):
+            key, cur_val = stripped.split('=', 1)
+            fallback = {'model-engine-file': found_engine, 'onnx-file': found_onnx,
+                        'labelfile-path': found_label}[key]
+            # Ghi đường dẫn tuyệt đối để nvinfer và hàm này cùng hiểu một file (tránh build lại engine)
+            resolved = _resolve_existing(cur_val) or fallback
+            new_lines.append('%s=%s' % (key, resolved) if resolved else line)
         else:
             new_lines.append(line)
 

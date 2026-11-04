@@ -29,7 +29,7 @@ OUTBOX_DIR = Path(os.getenv("OUTBOX_DIR", str(BASE_DIR / "outbox")))
 
 # Backend REST API
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
-EDGE_TOKEN = os.getenv("EDGE_TOKEN", "dev-edge-token")
+EDGE_TOKEN = os.getenv("EDGE_TOKEN", "")
 UPLOAD_ENDPOINT = BACKEND_URL + "/api/v1/congestion-events/snapshot"
 
 # Edge Device Identification & WebGIS Metadata
@@ -64,7 +64,7 @@ else:
 MQTT_HOST = _raw_mqtt_host
 
 MQTT_USER = os.getenv("MQTT_USER", "admin")
-MQTT_PASS = os.getenv("MQTT_PASS", "12345678")
+MQTT_PASS = os.getenv("MQTT_PASS", "")
 MQTT_CLIENT_ID = os.getenv("MQTT_CLIENT_ID", "{}-edge-pub".format(EDGE_ID))
 
 # MQTT Topics

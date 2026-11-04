@@ -65,7 +65,7 @@ PREVIEW_TRIGGER_FILE = os.path.join(SCRIPT_DIR, '.preview_trigger')
 LATEST_PREVIEW_FILE = os.path.join(SCRIPT_DIR, '.latest_preview.jpg')
 
 
-def _request_preview_from_running_pipeline(request_id, timeout_sec=2.0):
+def _request_preview_from_running_pipeline(request_id, timeout_sec=4.0):
     """Yêu cầu pipeline đang chạy trích xuất 1 frame mà KHÔNG mở lại camera CSI (Fix V3)."""
     if os.path.exists(LATEST_PREVIEW_FILE):
         try:
@@ -104,6 +104,111 @@ def _request_preview_from_running_pipeline(request_id, timeout_sec=2.0):
 def _log(msg):
     print('[AGENT] %s' % msg)
     sys.stdout.flush()
+
+
+# ── Nhận diện pipeline đang giữ camera (kể cả main.py chạy tay ngoài agent) ──
+PIPELINE_LOCK_FILE = os.path.join(SCRIPT_DIR, '.pipeline.lock')
+PIPELINE_SCRIPT = os.path.join(SCRIPT_DIR, 'main.py')
+EXIT_ALREADY_RUNNING = 3  # main.py thoát với mã này khi bản khác đang giữ khóa
+
+
+def _pipeline_lock_held():
+    """True nếu một main.py đang giữ khóa .pipeline.lock (main.py giữ khóa suốt vòng đời)."""
+    try:
+        import fcntl
+    except ImportError:
+        return False
+    if not os.path.exists(PIPELINE_LOCK_FILE):
+        return False
+    try:
+        with open(PIPELINE_LOCK_FILE, 'a+') as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (IOError, OSError):
+                return True
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            return False
+    except (IOError, OSError):
+        return False
+
+
+def _external_pipeline_pids(agent_state=None):
+    """PID các tiến trình main.py của dự án này không do agent quản lý (vd chạy tay từ terminal)."""
+    own_pid = None
+    if agent_state is not None:
+        own = agent_state.get('pipeline_process')
+        if own is not None and own.poll() is None:
+            own_pid = own.pid
+    pids = []
+    try:
+        import psutil
+        target = os.path.realpath(PIPELINE_SCRIPT)
+        for proc in psutil.process_iter(['pid', 'cmdline', 'cwd']):
+            try:
+                pid = proc.info['pid']
+                cmdline = proc.info.get('cmdline') or []
+                if pid in (os.getpid(), own_pid) or len(cmdline) < 2:
+                    continue
+                if 'python' not in os.path.basename(cmdline[0]).lower():
+                    continue
+                cwd = proc.info.get('cwd') or SCRIPT_DIR
+                for arg in cmdline[1:4]:
+                    if os.path.basename(arg) == 'main.py':
+                        if os.path.realpath(os.path.join(cwd, arg)) == target:
+                            pids.append(pid)
+                        break
+            except Exception:
+                continue
+        return pids
+    except ImportError:
+        pass
+    try:
+        out = subprocess.check_output(['pgrep', '-f', 'python3.*main.py'], stderr=subprocess.DEVNULL)
+        for item in out.decode('utf-8', errors='ignore').split():
+            if item.isdigit() and int(item) not in (os.getpid(), own_pid):
+                pids.append(int(item))
+    except Exception:
+        pass
+    return pids
+
+
+def _is_pipeline_running(agent_state):
+    """Pipeline đang chạy = tiến trình con của agent, HOẶC khóa camera đang bị giữ, HOẶC có main.py chạy ngoài."""
+    proc = agent_state.get('pipeline_process') if agent_state else None
+    if proc is not None and proc.poll() is None:
+        return True
+    return _pipeline_lock_held() or bool(_external_pipeline_pids(agent_state))
+
+
+def _stop_external_pipelines(agent_state, timeout_sec=None):
+    """Dừng an toàn (SIGINT -> SIGTERM -> SIGKILL) các main.py chạy ngoài agent. Trả về số tiến trình đã dừng."""
+    pids = _external_pipeline_pids(agent_state)
+    if not pids:
+        return 0
+    timeout_sec = GRACEFUL_STOP_TIMEOUT_SEC if timeout_sec is None else float(timeout_sec)
+    _log('Stopping external pipeline process(es) %s ...' % pids)
+
+    def _alive(pid):
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    for sig, wait_s in ((signal.SIGINT, timeout_sec), (signal.SIGTERM, SIGTERM_TIMEOUT_SEC),
+                        (getattr(signal, 'SIGKILL', signal.SIGTERM), 1.0)):
+        remaining = [pid for pid in pids if _alive(pid)]
+        if not remaining:
+            break
+        for pid in remaining:
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                pass
+        deadline = time.time() + wait_s
+        while time.time() < deadline and any(_alive(pid) for pid in remaining):
+            time.sleep(0.2)
+    return len(pids)
 
 
 # ── Giải phóng tài nguyên VRAM an toàn ────────────────────────────────────────
@@ -248,26 +353,28 @@ def make_capture_preview_handler(agent_state, upload_preview_fn):
 
         target_payload = None
         is_synthetic = False
+        lock = agent_state.setdefault('pipeline_lock', threading.RLock())
+        is_pipeline_running = False
 
-        proc = agent_state.get('pipeline_process')
-        is_pipeline_running = proc is not None and proc.poll() is None
-
-        # 1. Nguồn CSI Camera:
+        # 1. Nguồn CSI Camera: kiểm tra trạng thái và mở camera dưới cùng pipeline_lock để không
+        #    tranh camera với start/stop pipeline chạy song song ở luồng lệnh khác.
         if source_type == 'csi':
-            if is_pipeline_running:
-                # Fix V3: Pipeline đang giữ camera CSI -> Lấy frame từ pipeline worker, KHÔNG mở CSI trực tiếp!
-                _log('capture_preview: pipeline is actively running, requesting frame from active pipeline...')
-                target_payload = _request_preview_from_running_pipeline(request_id)
-            else:
-                # Pipeline đang dừng -> An toàn mở camera CSI trực tiếp
-                sensor_id = int(os.getenv('SENSOR_ID', os.getenv('CSI_SENSOR_ID', '0')))
-                _log('capture_preview: pipeline idle, capturing direct hardware CSI (sensor %d)...' % sensor_id)
-                raw_jpeg = capture_direct_csi_jpeg(sensor_id=sensor_id, width=1280, height=720, quality=85)
-                if not raw_jpeg and sensor_id == 0:
-                    raw_jpeg = capture_direct_csi_jpeg(sensor_id=1, width=1280, height=720, quality=85)
-                if raw_jpeg:
-                    _log('capture_preview: captured %d bytes directly from CSI' % len(raw_jpeg))
-                    target_payload = raw_jpeg
+            with lock:
+                is_pipeline_running = _is_pipeline_running(agent_state)
+                if is_pipeline_running:
+                    # Pipeline đang giữ camera CSI -> lấy frame qua IPC, KHÔNG mở lại camera
+                    _log('capture_preview: pipeline is running, requesting frame from active pipeline...')
+                    target_payload = _request_preview_from_running_pipeline(request_id)
+                else:
+                    # Pipeline dừng -> an toàn mở camera CSI trực tiếp
+                    sensor_id = int(os.getenv('SENSOR_ID', os.getenv('CSI_SENSOR_ID', '0')))
+                    _log('capture_preview: pipeline idle, capturing direct hardware CSI (sensor %d)...' % sensor_id)
+                    raw_jpeg = capture_direct_csi_jpeg(sensor_id=sensor_id, width=1280, height=720, quality=85)
+                    if not raw_jpeg and sensor_id == 0:
+                        raw_jpeg = capture_direct_csi_jpeg(sensor_id=1, width=1280, height=720, quality=85)
+                    if raw_jpeg:
+                        _log('capture_preview: captured %d bytes directly from CSI' % len(raw_jpeg))
+                        target_payload = raw_jpeg
 
         # 2. Nguồn File Video: Tìm đường dẫn video thực tế
         elif source_type == 'file':
@@ -467,11 +574,13 @@ def make_start_pipeline_handler(agent_state):
                         pass
                 time.sleep(1.0)  # Chờ tài nguyên CSI sensor và GPU VRAM được giải phóng hoàn toàn
 
-            # Dựng command line: tự động nhận diện main3.py nếu có, ngược lại dùng main.py
-            worker_script = 'main3.py' if os.path.exists(os.path.join(SCRIPT_DIR, 'main3.py')) else 'main.py'
+            # main.py chạy tay ngoài agent đang giữ camera -> dừng an toàn để agent tiếp quản
+            if _stop_external_pipelines(agent_state):
+                time.sleep(1.0)
+
             cmd = [
                 sys.executable,
-                os.path.join(SCRIPT_DIR, worker_script),
+                PIPELINE_SCRIPT,
                 '--source', source or 'csi',
                 '--roi-config', roi_config_path,
             ]
@@ -558,27 +667,18 @@ def make_stop_pipeline_handler(agent_state):
                 graceful_stop_pipeline(proc)
                 stopped_any = True
 
-            # Quét và dọn sạch bất kỳ tiến trình main.py nào còn sót lại trên OS Linux (kể cả bật ngoài)
+            # Dừng an toàn mọi main.py của dự án còn chạy ngoài agent (kể cả bật tay)
             if sys.platform.startswith('linux'):
-                try:
-                    out = subprocess.check_output(['pgrep', '-f', 'python3.*main.py'], stderr=subprocess.DEVNULL)
-                    for line in out.decode('utf-8', errors='ignore').splitlines():
-                        p_str = line.strip()
-                        if p_str and int(p_str) != os.getpid():
-                            try:
-                                os.kill(int(p_str), signal.SIGTERM)
-                                stopped_any = True
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
+                if _stop_external_pipelines(agent_state):
+                    stopped_any = True
 
-                # Giải phóng cảm biến camera CSI ngay lập tức để camera tắt đèn và sẵn sàng chụp preview
-                try:
-                    subprocess.run(['sudo', 'systemctl', 'restart', 'nvargus-daemon'],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
-                except Exception:
-                    pass
+                # Chỉ restart nvargus-daemon khi chắc chắn không còn pipeline nào giữ camera
+                if not _is_pipeline_running({}):
+                    try:
+                        subprocess.run(['sudo', '-n', 'systemctl', 'restart', 'nvargus-daemon'],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+                    except Exception:
+                        pass
 
             agent_state['pipeline_process'] = None
             agent_state['pipeline_started_at'] = None
@@ -648,9 +748,13 @@ def capture_direct_csi_jpeg(sensor_id=0, width=1280, height=720, quality=80):
     except Exception as e:
         _log('Direct gst-launch CSI capture failed: %s' % e)
 
-    # Tự động giải phóng nvargus-daemon nếu phiên camera trước đó chưa nhả cảm biến
+    # Giải phóng nvargus-daemon nếu phiên camera trước chưa nhả cảm biến. TUYỆT ĐỐI không làm
+    # khi còn pipeline đang giữ camera: restart daemon sẽ làm chết phiên Argus của pipeline.
+    if _pipeline_lock_held() or _external_pipeline_pids():
+        _log('capture_direct_csi_jpeg: camera is held by a running pipeline; skip nvargus-daemon restart')
+        return None
     try:
-        subprocess.run(['sudo', 'systemctl', 'restart', 'nvargus-daemon'],
+        subprocess.run(['sudo', '-n', 'systemctl', 'restart', 'nvargus-daemon'],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
         time.sleep(1.0)
         res = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8)
@@ -956,7 +1060,9 @@ def run_agent():
 
     edge_id = os.getenv('EDGE_ID', 'edge-01')
     backend_url = os.getenv('BACKEND_URL', 'http://localhost:8000')
-    edge_token = os.getenv('EDGE_TOKEN', 'dev-edge-token')
+    edge_token = os.getenv('EDGE_TOKEN', '').strip()
+    if not edge_token:
+        _log('[WARN] EDGE_TOKEN is not set in .env: image uploads to backend will be rejected (401).')
     agent_client_id = os.getenv('MQTT_AGENT_CLIENT_ID', '%s-agent' % edge_id)
 
     _log('Starting Jetson Agent for edge_id=%s (client_id=%s)' % (edge_id, agent_client_id))
@@ -1003,9 +1109,7 @@ def run_agent():
     )
     cmd_handler = CommandHandler(publisher)
     # Nhường lệnh live stream cho tiến trình pipeline khi pipeline đang chạy (LiveStreamController nằm ở đó)
-    publisher.set_pipeline_alive_check(
-        lambda: agent_state.get('pipeline_process') is not None and agent_state['pipeline_process'].poll() is None
-    )
+    publisher.set_pipeline_alive_check(lambda: _is_pipeline_running(agent_state))
 
     # Đăng ký tất cả handler
     cmd_handler.register('list_videos', make_list_videos_handler())
@@ -1080,11 +1184,12 @@ def run_agent():
 
     def query_live_pipeline_status():
         proc = agent_state.get('pipeline_process')
-        if proc is None:
-            return {'pipeline_running': False, 'pid': None}
-        retcode = proc.poll()
-        if retcode is None:
+        if proc is not None and proc.poll() is None:
             return {'pipeline_running': True, 'pid': proc.pid}
+        # main.py chạy tay ngoài agent vẫn phải được báo là đang chạy
+        external = _external_pipeline_pids(agent_state)
+        if external or _pipeline_lock_held():
+            return {'pipeline_running': True, 'pid': external[0] if external else None, 'external': True}
         return {'pipeline_running': False, 'pid': None}
 
     publisher.set_pipeline_status_callback(query_live_pipeline_status)
@@ -1148,6 +1253,20 @@ def run_agent():
                     # 1. Người dùng chủ động dừng trên WebGIS hoặc không có dữ liệu khởi động -> Không restart
                     if intentional or not last_data:
                         _log('Pipeline stopped intentionally by user or idle. Watchdog idle.')
+                        continue
+
+                    # 1b. Bản khác đang giữ camera (main.py thoát mã 3) -> khởi động lại cũng vô ích
+                    if retcode == EXIT_ALREADY_RUNNING:
+                        _log('[WATCHDOG] Pipeline exited because another instance holds the camera. No auto-restart.')
+                        try:
+                            publisher.publish_command_result(
+                                command_id='watchdog-%d' % int(time.time()),
+                                action='pipeline_watchdog',
+                                status='error',
+                                message='Another pipeline instance is already running and holds the camera.'
+                            )
+                        except Exception:
+                            pass
                         continue
 
                     # 2. File video chạy hết tự nhiên (EOS: retcode == 0) -> Không restart, báo Web

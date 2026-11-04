@@ -56,6 +56,8 @@ services:
       - ./webgis/backend:/app
       - ./webgis/backend/data:/app/data
       - ./.env:/app/.env:ro
+      # Backend đọc JWT_SECRET từ đây để ký/kiểm token chung với auth-service (config.py)
+      - ./webgis/auth-service/.env:/auth-service/.env:ro
     networks:
       - webgis_net
 

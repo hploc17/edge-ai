@@ -57,10 +57,24 @@ def _apply_homography(H, points):
 # Congestion Thresholds & Colors Definition (Fix A2: Single Source of Truth)
 # ---------------------------------------------------------------------------
 
+# Thang điểm 0-100 dùng chung toàn hệ thống (Edge, dự báo, backend, frontend):
+#   FREE      : score <  FREE_MAX  (0-34)
+#   SLOW      : FREE_MAX <= score < SLOW_MAX (35-64)
+#   CONGESTED : score >= SLOW_MAX (65-100)
 CONGESTION_THRESHOLDS = {
     'FREE_MAX': 35,
     'SLOW_MAX': 65,
 }
+
+
+def status_from_score(congestion_score):
+    """Quy đổi điểm ùn tắc sang nhãn trạng thái theo CONGESTION_THRESHOLDS."""
+    score = float(congestion_score)
+    if score >= CONGESTION_THRESHOLDS['SLOW_MAX']:
+        return 'CONGESTED'
+    if score >= CONGESTION_THRESHOLDS['FREE_MAX']:
+        return 'SLOW'
+    return 'FREE'
 
 TRAFFIC_COLORS = {
     'FREE': '#10B981',      # Emerald Green
@@ -113,7 +127,7 @@ class TrafficStateModel(object):
                  free_speed_kmh=22.0,
                  free_max_score=30.0,
                  slow_min_score=35.0,
-                 slow_max_score=65.0,
+                 slow_max_score=64.0,
                  congested_min_score=65.0):
         if not (0.0 <= stopped_speed_kmh <= congested_speed_kmh <= slow_speed_kmh):
             raise ValueError('Require stopped <= congested <= slow speed thresholds')
@@ -318,6 +332,8 @@ class TrafficAnalyzer(object):
     """
 
     ENTRY_RATE_WINDOW_S = 60.0
+    SEEN_TRACK_RETENTION_S = 600.0  # Giữ track_id đã đếm 10 phút để không đếm lặp khi xe ra/vào ROI
+    SCORE_SAMPLE_INTERVAL_S = 1.0   # Lấy mẫu điểm cho dự báo 1 Hz (thay vì mỗi frame)
 
     def __init__(self, road_length_m, lane_count,
                  state_model=None,
@@ -340,12 +356,15 @@ class TrafficAnalyzer(object):
         self._exclusion_polygons = list(exclusion_polygons) if exclusion_polygons else []
         self._ignore_never_moved = bool(ignore_never_moved)
 
-        # Entry rate: deque of (timestamp, track_id) for new confirmations
+        # Entry rate: deque of (event_time, track_id) for new confirmations
         self._entry_events = deque()
-        self._seen_track_ids = set()  # Track IDs already counted for entry rate
+        # {track_id: event_time lần đếm gần nhất}; được dọn theo SEEN_TRACK_RETENTION_S (chạy 24/7 không rò bộ nhớ)
+        self._seen_track_ids = {}
 
-        # Score history for forecast: deque of (timestamp, congestion_score)
+        # Score history for forecast: deque of (event_time, congestion_score), lấy mẫu 1 Hz
         self._score_history = deque()
+        self._last_forecast = None
+        self._last_forecast_time = None
 
     def update_geometry(self, road_length_m, lane_count):
         """Update road geometry dynamically during hot-reload."""
@@ -357,14 +376,29 @@ class TrafficAnalyzer(object):
         self._lane_count = int(lane_count)
 
     def record_presence_events(self, events):
-        """Record entry events from RoiPresenceCounter for entry-rate calculation."""
-        now = time.monotonic()
+        """Record entry events from RoiPresenceCounter for entry-rate calculation.
+
+        Dùng event['timestamp'] (thời gian luồng video) để entry rate nhất quán với
+        tốc độ/mật độ, kể cả khi chạy video file nhanh/chậm hơn thời gian thực.
+        """
         for event in events:
             if event.get('event') == 'confirmed':
                 track_id = event.get('track_id')
+                event_time = float(event.get('timestamp', 0.0))
                 if track_id is not None and track_id not in self._seen_track_ids:
-                    self._seen_track_ids.add(track_id)
-                    self._entry_events.append((now, track_id))
+                    self._seen_track_ids[track_id] = event_time
+                    self._entry_events.append((event_time, track_id))
+
+    def excluded_track_ids(self, presence_snapshot):
+        """Track đang confirmed nhưng nằm trong vùng loại trừ (vd bãi đỗ xe lề đường)."""
+        if not self._exclusion_polygons:
+            return set()
+        positions = presence_snapshot.get('track_positions') or {}
+        excluded = set()
+        for tid, point in positions.items():
+            if any(point_in_polygon(point, poly) for poly in self._exclusion_polygons):
+                excluded.add(int(tid))
+        return excluded
 
     def analyze(self, timestamp, presence_snapshot, speeds):
         """Compute full metrics dict.
@@ -377,6 +411,16 @@ class TrafficAnalyzer(object):
         current_count = int(presence_snapshot.get('current_total', 0))
         counts_by_class = dict(presence_snapshot.get('current_by_class', {}))
         raw_tracks = int(presence_snapshot.get('raw_tracks', current_count))
+
+        # Vùng loại trừ: xe trong vùng này không tính vào số đếm, mật độ, tốc độ, tỷ lệ dừng
+        excluded_ids = self.excluded_track_ids(presence_snapshot)
+        if excluded_ids:
+            track_classes = presence_snapshot.get('track_classes') or {}
+            for tid in excluded_ids:
+                cls = track_classes.get(tid)
+                if cls in counts_by_class and counts_by_class[cls] > 0:
+                    counts_by_class[cls] -= 1
+            current_count = max(0, current_count - len(excluded_ids))
 
         # QUAN TRONG: 'speeds' chua toc do CUA MOI TRACK dang duoc
         # TrackSpeedEstimator theo doi trong TOAN BO khung hinh camera,
@@ -392,7 +436,7 @@ class TrafficAnalyzer(object):
         # analytics/presence_counter.py truoc (xem ghi chu cuoi file).
         roi_track_ids = presence_snapshot.get('current_track_ids')
         if roi_track_ids is not None:
-            roi_track_ids = set(int(t) for t in roi_track_ids)
+            roi_track_ids = set(int(t) for t in roi_track_ids) - excluded_ids
             speeds = {tid: v for tid, v in speeds.items() if int(tid) in roi_track_ids}
         # Neu presence_snapshot KHONG cung cap duoc tap track_id (module
         # cu chua cap nhat), tam thoi giu nguyen speeds nhu cu NHUNG in
@@ -430,18 +474,10 @@ class TrafficAnalyzer(object):
         stopped_threshold = self._state_model.stopped_speed_kmh
         active_speeds = []
         stopped_count = 0
-        track_positions = presence_snapshot.get('track_positions') or {}
         for tid, v in speeds.items():
             s = v.get('speed_kmh')
-            if s is None:
+            if s is None or int(tid) in excluded_ids:
                 continue
-
-            # Bỏ qua xe trong danh sách polygon loại trừ (ví dụ vùng đỗ xe lề đường)
-            if self._exclusion_polygons and track_positions and tid in track_positions:
-                pt = track_positions[tid]
-                from spatial.geometry_utils import point_in_polygon
-                if any(point_in_polygon(pt, poly) for poly in self._exclusion_polygons):
-                    continue
 
             # Bỏ qua xe chưa từng di chuyển kể từ khi quan sát (xe đỗ cố định từ đầu)
             has_moved = v.get('has_moved', True)
@@ -492,14 +528,16 @@ class TrafficAnalyzer(object):
             pce_density = density_raw
         pce_density = round(pce_density, 2)
 
-        # ROI entry rate (last 60 seconds)
+        # ROI entry rate (60 giây gần nhất, theo thời gian sự kiện)
         cutoff = float(timestamp) - self.ENTRY_RATE_WINDOW_S
-        # Prune old entries using entry_events timestamps (wall clock)
-        now_wall = time.monotonic()
-        wall_cutoff = now_wall - self.ENTRY_RATE_WINDOW_S
-        while self._entry_events and self._entry_events[0][0] < wall_cutoff:
+        while self._entry_events and self._entry_events[0][0] < cutoff:
             self._entry_events.popleft()
         roi_entry_rate = len(self._entry_events)  # count in last 60s
+        seen_cutoff = float(timestamp) - self.SEEN_TRACK_RETENTION_S
+        if self._seen_track_ids and len(self._seen_track_ids) > 2000:
+            self._seen_track_ids = dict(
+                (tid, t) for tid, t in self._seen_track_ids.items() if t >= seen_cutoff
+            )
 
         # Estimated flow: q = k * v (fundamental diagram)
         # density (veh/km/lane) * avg_speed (km/h) * lane_count = veh/h per road
@@ -520,13 +558,20 @@ class TrafficAnalyzer(object):
             max_speed_kmh=max_speed
         )
 
-        # Record score for forecast (use event_time for correctness in tests and real pipeline)
-        self._score_history.append((float(timestamp), congestion_score))
-        hist_cutoff = float(timestamp) - self._forecast_history_s
-        while self._score_history and self._score_history[0][0] < hist_cutoff:
-            self._score_history.popleft()
+        # Lịch sử điểm cho dự báo: lấy mẫu 1 Hz theo event_time. Trước đây ghi mỗi frame
+        # (~22.000 điểm / 15 phút) và hồi quy lại toàn bộ ở mỗi frame trong probe GStreamer.
+        now_t = float(timestamp)
+        if (not self._score_history or
+                now_t - self._score_history[-1][0] >= self.SCORE_SAMPLE_INTERVAL_S):
+            self._score_history.append((now_t, congestion_score))
+            hist_cutoff = now_t - self._forecast_history_s
+            while self._score_history and self._score_history[0][0] < hist_cutoff:
+                self._score_history.popleft()
+            self._last_forecast = None  # có mẫu mới -> tính lại dự báo
 
-        forecast = self._compute_forecast(float(timestamp))
+        if self._last_forecast is None:
+            self._last_forecast = self._compute_forecast(now_t)
+        forecast = self._last_forecast
 
         return {
             'current_vehicle_count': current_count,
@@ -545,6 +590,7 @@ class TrafficAnalyzer(object):
             'stopped_vehicle_ratio': round(stopped_ratio, 3),
             'traffic_status': state,
             'congestion_score': congestion_score,
+            'excluded_vehicle_count': len(excluded_ids),
             'is_incident': getattr(self._state_model, '_incident_detected', False),
             'forecast': forecast,
             'current_by_class': counts_by_class,  # internal alias
@@ -594,13 +640,8 @@ class TrafficAnalyzer(object):
         for label, minutes in [('5m', 5), ('10m', 10)]:
             t_future = t_elapsed + minutes * 60.0
             predicted_score = int(round(max(0.0, min(100.0, slope * t_future + intercept))))
-            # Derive state from predicted score
-            if predicted_score >= 60:
-                predicted_state = TrafficStateModel.CONGESTED
-            elif predicted_score >= 30:
-                predicted_state = TrafficStateModel.SLOW
-            else:
-                predicted_state = TrafficStateModel.FREE
+            # Cùng thang ngưỡng với trạng thái hiện tại (CONGESTION_THRESHOLDS)
+            predicted_state = status_from_score(predicted_score)
             horizons[label] = {
                 'status': predicted_state,
                 'congestion_score': predicted_score,
