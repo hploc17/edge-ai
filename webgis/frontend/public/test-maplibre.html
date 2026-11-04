@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>MapLibre Segment Render Test</title>
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    body { margin: 0; }
+    #map { width: 100vw; height: 100vh; }
+    #info { position: absolute; top: 10px; left: 10px; background: white; padding: 10px 14px; border-radius: 8px; font-family: monospace; z-index: 10; max-width: 400px; font-size: 13px; box-shadow: 0 2px 12px rgba(0,0,0,.2); }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="info">Loading...</div>
+  <script>
+    const info = document.getElementById('info');
+    const SEGMENT_GEOJSON = {
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        geometry: {
+          type: "LineString",
+          coordinates: [
+            [106.6571611, 10.8425938],
+            [106.6573141, 10.8425852],
+            [106.6576252, 10.8425678],
+            [106.6579433, 10.8425096],
+            [106.6579902, 10.8424987],
+            [106.6581629, 10.8424584],
+            [106.6587906, 10.8423286],
+            [106.6589337, 10.8422968],
+            [106.6591647, 10.8422455]
+          ]
+        },
+        properties: {
+          segment_id: "seg-edge-01",
+          road_name: "Nguyen Van Khoi",
+          road_width_m: 7.0,
+          congestion_score: 85,
+          traffic_status: "CONGESTED"
+        }
+      }]
+    };
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: {
+        version: 8,
+        sources: { "osm": { type: "raster", tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], tileSize: 256 } },
+        layers: [{ id: "osm", type: "raster", source: "osm" }]
+      },
+      center: [106.6580, 10.8425],
+      zoom: 17
+    });
+    map.on('load', () => {
+      map.addSource('seg', { type: 'geojson', data: SEGMENT_GEOJSON });
+      map.addLayer({ id: 'seg-red', type: 'line', source: 'seg', paint: { 'line-color': '#FF0000', 'line-width': 20, 'line-opacity': 1.0 } });
+      map.addLayer({
+        id: 'seg-heat', type: 'line', source: 'seg',
+        paint: {
+          'line-color': ['interpolate', ['linear'], ['coalesce', ['get', 'congestion_score'], 0], 0, ['to-color', '#10b981'], 45, ['to-color', '#eab308'], 75, ['to-color', '#ef4444'], 100, ['to-color', '#7f1d1d']],
+          'line-width': ['interpolate', ['exponential', 1.5], ['zoom'], 13, ['*', ['coalesce', ['get', 'road_width_m'], 10], 0.45], 17, ['*', ['coalesce', ['get', 'road_width_m'], 10], 3.40]],
+          'line-opacity': 0.9
+        }
+      });
+      const c = map.getCenter();
+      info.innerHTML = "<b>Map loaded! Layers: seg-red + seg-heat</b><br>" +
+        "Center: " + c.lng.toFixed(4) + ", " + c.lat.toFixed(4) + "<br>" +
+        "Zoom: " + map.getZoom().toFixed(1) + "<br>" +
+        "Features: " + SEGMENT_GEOJSON.features.length + "<br>" +
+        "<br><b style='color:green'>Neu thay dai do -> MapLibre OK!</b><br><b style='color:red'>Neu khong thay gi -> bao cao</b>";
+    });
+    map.on('error', e => {
+      info.innerHTML = "<b style='color:red'>Error: " + (e.error && e.error.message || e) + "</b>";
+    });
+  </script>
+</body>
+</html>

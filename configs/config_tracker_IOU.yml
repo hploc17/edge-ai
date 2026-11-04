@@ -1,0 +1,17 @@
+%YAML:1.0
+################################################################################
+# NVIDIA DeepStream 6.0 IOU Tracker Configuration (lightweight baseline)
+# Reference: /opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_IOU.yml
+################################################################################
+
+BaseConfig:
+  minDetectorConfidence: 0.25
+  minMatchingScore4Iou: 0.35
+
+TargetManagement:
+  enableBboxUnClipping: 1
+  maxTargetsPerStream: 100
+  minTrackingConfidenceDuringInactive: 0.85
+  maxShadowTrackingAge: 10
+  probationAge: 1
+  earlyTerminationAge: 1

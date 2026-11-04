@@ -1,0 +1,79 @@
+services:
+  # 1. MediaMTX Streaming Server (Nhận RTSP từ Jetson Nano, phân phối WebRTC/HLS)
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: webgis_mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554/tcp"
+      - "8554:8554/udp"
+      - "8888:8888/tcp"
+      - "8889:8889/tcp"
+      - "8189:8189/udp"
+    volumes:
+      - ./deploy/mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    networks:
+      - webgis_net
+
+  # 2. Auth Service (Node.js Express + Prisma SQLite)
+  auth-service:
+    build:
+      context: ./webgis/auth-service
+      dockerfile: Dockerfile
+    container_name: webgis_auth_service
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./webgis/auth-service/prisma:/app/prisma
+    env_file:
+      - ./webgis/auth-service/.env
+    environment:
+      - PORT=5000
+      - DATABASE_URL=file:/app/prisma/dev.db
+      - CORS_ORIGIN=*
+      - TZ=Asia/Ho_Chi_Minh
+    networks:
+      - webgis_net
+
+  # 3. Backend GIS Hub (Python FastAPI + MQTT Telemetry)
+  backend:
+    build:
+      context: ./webgis/backend
+      dockerfile: Dockerfile
+    container_name: webgis_backend
+    restart: unless-stopped
+    depends_on:
+      - auth-service
+      - mediamtx
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+    volumes:
+      - ./webgis/backend:/app
+      - ./webgis/backend/data:/app/data
+      - ./.env:/app/.env:ro
+    networks:
+      - webgis_net
+
+  # 4. Frontend WebGIS Dashboard (React + Vite)
+  frontend:
+    build:
+      context: ./webgis/frontend
+      dockerfile: Dockerfile
+    container_name: webgis_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "5173:5173"
+    networks:
+      - webgis_net
+
+networks:
+  webgis_net:
+    driver: bridge
+

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Restart Jetson Pipeline
+Comment=Khoi dong lai Pipeline AI va Jetson Agent bang 1 click
+Exec=bash -c "/home/$USER/edge-ai-web/restart_edge.sh; echo ''; read -p 'Nhan Enter de dong cua so...' "
+Terminal=true
+Icon=system-reboot
+Categories=Development;
+StartupNotify=true
