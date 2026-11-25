@@ -23,6 +23,16 @@ echo.
 echo [2/4] Kiem tra thu vien phu thuoc...
 python -m pip install -r "%~dp0webgis\backend\requirements.txt" --quiet
 
+:: Tu dong nhan dien IP LAN cua may chu server (Wi-Fi hoac Ethernet)
+for /f "usebackq tokens=*" %%i in (`powershell -NoProfile -Command "(Get-NetIPAddress -AddressFamily IPv4 | Where-Object InterfaceAlias -notmatch 'Virtual|WSL|Loopback' | Where-Object IPAddress -notlike '127.*' | Where-Object IPAddress -notlike '169.254.*' | Select-Object -ExpandProperty IPAddress -First 1)"`) do (
+    set "DETECTED_LAN_IP=%%i"
+)
+if not "%DETECTED_LAN_IP%"=="" (
+    echo [OK] Tu dong nhan dien IP LAN cua may chu: %DETECTED_LAN_IP%
+    set "MEDIAMTX_HOST=%DETECTED_LAN_IP%"
+    set "MEDIAMTX_INGEST_HOST=%DETECTED_LAN_IP%"
+)
+
 if not exist "%~dp0webgis\auth-service\node_modules\" (
     echo [INFO] Dang cai dat Auth Service dependencies...
     pushd "%~dp0webgis\auth-service"

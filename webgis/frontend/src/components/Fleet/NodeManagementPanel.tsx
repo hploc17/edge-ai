@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { X, Search, Video, Plus, Trash2, MapPin, Gauge, Terminal, Camera, Settings, Cpu } from "lucide-react";
+import { X, Search, Video, Plus, Trash2, MapPin, Gauge, Terminal, Camera, Settings, Cpu, Radio } from "lucide-react";
 import type { NodeDetail } from "../../types/gis";
 import { api } from "../../services/api";
 
@@ -8,6 +8,8 @@ interface NodeManagementPanelProps {
   onClose: () => void;
   onSelectNode: (edgeId: string) => void;
   onOpenAddNode: () => void;
+  pendingCount: number;
+  onOpenPendingApproval: () => void;
   onRefreshNodes: () => void;
   onOpenCamera?: (node: NodeDetail) => void;
   onOpenRemote?: (node: NodeDetail) => void;
@@ -19,6 +21,8 @@ export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
   onClose,
   onSelectNode,
   onOpenAddNode,
+  pendingCount,
+  onOpenPendingApproval,
   onRefreshNodes,
   onOpenCamera,
   onOpenRemote,
@@ -31,7 +35,6 @@ export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
     const matchSearch = n.name.toLowerCase().includes(search.toLowerCase()) || n.edge_id.toLowerCase().includes(search.toLowerCase());
     if (!matchSearch) return false;
     if (filter === "online") return n.status === "online";
-    if (filter === "congested") return n.traffic_status === "CONGESTED";
     if (filter === "offline") return n.status === "offline";
     return true;
   });
@@ -86,7 +89,6 @@ export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
           {[
             { id: "all", label: `Tất cả (${nodes.length})` },
             { id: "online", label: `Online (${nodes.filter((n) => n.status === "online").length})` },
-            { id: "congested", label: `Ùn tắc (${nodes.filter((n) => n.traffic_status === "CONGESTED").length})` }
           ].map((f) => (
             <button
               key={f.id}
@@ -100,6 +102,18 @@ export const NodeManagementPanel: React.FC<NodeManagementPanelProps> = ({
               {f.label}
             </button>
           ))}
+          <button
+            onClick={onOpenPendingApproval}
+            className={`relative px-2.5 py-1 rounded-lg font-semibold border transition shadow-sm flex items-center gap-1 ${
+              pendingCount > 0
+                ? "bg-amber-500 border-amber-500 text-white hover:bg-amber-600"
+                : "bg-white border-slate-300 text-slate-700 hover:bg-slate-100"
+            }`}
+            title="Xem các thiết bị mới đang chờ quản trị viên thiết lập"
+          >
+            <Radio className="w-3 h-3" />
+            <span>Mới ({pendingCount})</span>
+          </button>
         </div>
 
         <button

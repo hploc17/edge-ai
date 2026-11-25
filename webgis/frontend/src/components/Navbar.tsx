@@ -90,8 +90,8 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
           <div>
             <div className="flex items-center space-x-2">
-              <h1 className="font-extrabold text-lg tracking-wide bg-gradient-to-r from-blue-700 via-indigo-600 to-cyan-600 bg-clip-text text-transparent">
-                TRAFFIC OPERATIONS CENTER
+              <h1 className="font-semibold text-lg text-action">
+                traffic operations center
               </h1>
               <span className="px-2 py-0.5 text-xs font-bold bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-full flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
@@ -139,7 +139,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Lịch sử kẹt xe: CÔNG KHAI */}
         <button
           onClick={onOpenHistory}
-          className="flex items-center space-x-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 transition shadow-sm cursor-pointer"
+          className="flex items-center space-x-1.5 px-3.5 py-2 text-xs font-medium rounded-lg bg-action-selected hover:bg-blue-100 border border-blue-200 text-action transition cursor-pointer"
         >
           <History className="w-4 h-4 text-indigo-600" />
           <span>Lịch sử Kẹt xe</span>
@@ -151,7 +151,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             {pendingCount > 0 && onOpenPendingApproval && (
               <button
                 onClick={onOpenPendingApproval}
-                className="relative flex items-center space-x-1.5 px-3.5 py-2 text-xs font-bold rounded-lg bg-amber-500 hover:bg-amber-600 text-white shadow-md shadow-amber-500/30 transition animate-pulse cursor-pointer"
+                className="relative flex items-center space-x-1.5 px-3.5 py-2 text-xs font-medium rounded-lg border border-action text-action hover:bg-action-selected transition cursor-pointer"
               >
                 <Radio className="w-4 h-4" />
                 <span>{pendingCount} thiết bị mới</span>
@@ -185,7 +185,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         {!isAuthenticated || !user ? (
           <Link
             to="/login"
-            className="flex items-center space-x-1.5 px-4 py-2 text-xs font-bold rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-md shadow-blue-600/30 transition"
+            className="flex items-center space-x-1.5 px-4 py-2 text-xs font-medium rounded-lg bg-action hover:bg-action-hover text-white transition"
           >
             <LogIn className="w-4 h-4" />
             <span>Đăng Nhập</span>
@@ -208,7 +208,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             {/* User Dropdown Menu */}
             {isDropdownOpen && (
-              <div className="absolute right-0 mt-2 w-56 rounded-2xl bg-white border border-slate-200 shadow-2xl py-2 z-50 animate-fadeIn text-slate-700">
+              <div className="absolute right-0 mt-2 w-56 rounded-lg bg-white border border-slate-200 shadow-lg py-2 z-50 animate-fadeIn text-slate-700">
                 <div className="px-4 py-2.5 border-b border-slate-100">
                   <p className="text-xs font-bold text-slate-900 truncate">{user.name}</p>
                   <p className="text-[11px] text-slate-500 truncate">{user.email}</p>

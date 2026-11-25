@@ -101,6 +101,18 @@ CLOCK_SKEW_LIMIT_S = float(os.getenv('COMMAND_CLOCK_SKEW_LIMIT_SECONDS', '600'))
 ENABLE_EDGE_FORECAST = os.getenv('ENABLE_EDGE_FORECAST', '0').lower() in ('1', 'true', 'yes')
 
 
+def mqtt_connect_reason(rc):
+    """Map MQTT CONNACK reason codes to a concise, credential-safe message."""
+    reasons = {
+        1: 'unacceptable protocol version',
+        2: 'identifier rejected',
+        3: 'broker unavailable',
+        4: 'bad username or password',
+        5: 'not authorized',
+    }
+    return reasons.get(int(rc), 'unknown reason')
+
+
 def parse_timestamp_seconds(value):
     """Parse ISO-8601 string or numeric timestamp to epoch seconds.
     Compatible with Python 3.6+ and Python 3.11+.
@@ -268,6 +280,9 @@ class MQTTPublisher(object):
 
     def start(self):
         """Connect and start background loop thread."""
+        if not MQTT_USERNAME or not MQTT_PASSWORD:
+            print('[MQTT] MQTT credentials are missing: configure MQTT_USER and MQTT_PASS; '
+                  'credentials are never logged')
         try:
             self._client.connect(MQTT_HOST, MQTT_PORT, keepalive=15)
             self._client.loop_start()
@@ -339,7 +354,17 @@ class MQTTPublisher(object):
         }
         for key in ('algorithm_version', 'traffic_context', 'is_incident', 'excluded_vehicle_count',
                     'dwell_time_avg_s', 'median_dwell_s', 'max_dwell_s',
-                    'stopped_dwell_max_s', 'stopped_dwell_median_s'):
+                    'stopped_dwell_max_s', 'stopped_dwell_median_s',
+                    'method', 'spi', 'spi_level', 'traffic_state',
+                    'reference_speed_kmh', 'valid_speed_tracks', 'stopped_ratio',
+                    'score_thresholds', 'speed_ratio_percent', 'speed_reduction_index',
+                    'status_pending', 'status_pending_seconds', 'status_confirm_seconds',
+                    'raw_traffic_status', 'representative_speed_kmh', 'representative_speed_method',
+                    'hcm_los_proxy', 'free_flow_speed_kmh',
+                    'spi_thresholds', 'raw_traffic_state', 'stable_traffic_state',
+                    'minimum_valid_tracks', 'hcm_los_proxy_is_official', 'hcm_los_proxy_thresholds',
+                    'density_pcu_per_km_lane', 'pcu_weight_basis',
+                    'pce', 'data_quality', 'reason', 'spi_signalized'):
             if key in metrics:
                 payload[key] = metrics[key]
         if ENABLE_EDGE_FORECAST and 'forecast' in metrics:
@@ -654,7 +679,12 @@ class MQTTPublisher(object):
                     self.publish_registration()
         else:
             self._is_connected = False
-            print('[MQTT] Connection refused for %s (rc=%d)' % (self._client_id, rc))
+            print('[MQTT] Connection refused for %s (rc=%d, %s)' %
+                  (self._client_id, rc, mqtt_connect_reason(rc)))
+            if int(rc) == 5:
+                print('[MQTT] rc=5: broker rejected the username/password or ACL. '
+                      'Verify MQTT_USER/MQTT_PASS on both Jetson and WebGIS, '
+                      'then restart the MQTT processes.')
 
     def _on_disconnect(self, client, userdata, rc, properties=None):
         self._is_connected = False

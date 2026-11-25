@@ -38,7 +38,7 @@ export const CameraViewModal: React.FC<CameraViewModalProps> = ({
   const [liveTrafficStatus, setLiveTrafficStatus] = useState<string>(node?.traffic_status || "FREE");
   const [liveSpeed, setLiveSpeed] = useState<number>(Number(node?.avg_speed_kmh) || 0);
   const [liveVehicleCount, setLiveVehicleCount] = useState<number>(Number(node?.current_vehicle_count) || 0);
-  const [liveScore, setLiveScore] = useState<number>(Number(node?.congestion_score) || 0);
+  const [liveScore, setLiveScore] = useState<number | null>(node?.congestion_score ?? null);
 
   // Sync state when node changes or modal opens
   useEffect(() => {
@@ -47,7 +47,7 @@ export const CameraViewModal: React.FC<CameraViewModalProps> = ({
       setLiveTrafficStatus(node.traffic_status || "FREE");
       setLiveSpeed(Number(node.avg_speed_kmh) || 0);
       setLiveVehicleCount(Number(node.current_vehicle_count) || 0);
-      setLiveScore(Number(node.congestion_score) || 0);
+      setLiveScore(node.congestion_score ?? null);
       setLastCapturedTime(node.last_seen ? new Date(node.last_seen).toLocaleTimeString() : new Date().toLocaleTimeString());
     }
   }, [node, isOpen]);
@@ -68,10 +68,11 @@ export const CameraViewModal: React.FC<CameraViewModalProps> = ({
 
       // Cập nhật telemetry chỉ số
       if (msg.type === "telemetry" && msg.edge_id === node.edge_id) {
-        if (msg.traffic_status) setLiveTrafficStatus(msg.traffic_status);
-        if (msg.average_speed !== undefined) setLiveSpeed(msg.average_speed);
-        if (msg.vehicle_count !== undefined) setLiveVehicleCount(msg.vehicle_count);
-        if (msg.congestion_score !== undefined) setLiveScore(msg.congestion_score);
+        const data = msg.data ?? msg;
+        if (data.traffic_status) setLiveTrafficStatus(data.traffic_status);
+        if (data.avg_speed_kmh !== undefined) setLiveSpeed(data.avg_speed_kmh);
+        if (data.current_vehicle_count !== undefined) setLiveVehicleCount(data.current_vehicle_count);
+        if (data.congestion_score !== undefined) setLiveScore(data.congestion_score);
       }
     });
 
@@ -228,7 +229,7 @@ export const CameraViewModal: React.FC<CameraViewModalProps> = ({
               <span className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold ${
                 isCongested ? "bg-red-100 text-red-800" : isSlow ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"
               }`}>
-                {Math.round(Number(liveScore) || 0)}%
+                {liveScore == null || liveTrafficStatus === "UNKNOWN" || liveTrafficStatus === "STALE" ? "--" : `${Math.round(liveScore)}%`}
               </span>
             </div>
           </div>

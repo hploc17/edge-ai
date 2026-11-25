@@ -143,5 +143,83 @@ class TestCommandTtl(unittest.TestCase):
         self.assertFalse(command_expiry(now - 86400 * 400, 30)[0])  # đồng hồ lệch > 1 năm
 
 
+class TestPipelineSourceTracking(unittest.TestCase):
+    """The active source must follow pipeline state and be cleared after stop."""
+
+    def setUp(self):
+        from threading import RLock
+        from unittest.mock import Mock
+        from services.data_store import DataStore
+
+        self.store = DataStore.__new__(DataStore)
+        self.store._lock = RLock()
+        self.store.nodes = {'edge-1': {'pipeline_running': False}}
+        self.store._save_state_cache = Mock()
+        self.store.mark_node_telemetry_stale = Mock()
+
+    def test_pipeline_source_is_recorded_and_cleared_on_stop(self):
+        self.store.update_pipeline_status(
+            'edge-1',
+            running=True,
+            pid=123,
+            source_type='file',
+            source_name='traffic.mp4',
+        )
+        self.assertEqual(self.store.nodes['edge-1']['pipeline_source_type'], 'file')
+        self.assertEqual(self.store.nodes['edge-1']['pipeline_source_name'], 'traffic.mp4')
+
+        self.store.update_pipeline_status('edge-1', running=False)
+        self.assertIsNone(self.store.nodes['edge-1']['pipeline_source_type'])
+        self.assertIsNone(self.store.nodes['edge-1']['pipeline_source_name'])
+
+
+class TestPreviewRequestIsolation(unittest.TestCase):
+    """A missing preview ID must never fall back to another request's frame."""
+
+    def setUp(self):
+        from unittest import mock
+        fake_store = types.ModuleType('services.data_store')
+        fake_store.store = object()
+        fake_mqtt = types.ModuleType('services.mqtt_service')
+        fake_mqtt.mqtt_service = object()
+        fake_ws = types.ModuleType('services.websocket_manager')
+        fake_ws.ws_manager = object()
+        fake_auth = types.ModuleType('services.auth_middleware')
+        fake_auth.require_staff = lambda: None
+        patcher = mock.patch.dict(sys.modules, {
+            'services.data_store': fake_store,
+            'services.mqtt_service': fake_mqtt,
+            'services.websocket_manager': fake_ws,
+            'services.auth_middleware': fake_auth,
+        })
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        spec = importlib.util.spec_from_file_location(
+            'remote_control_under_test',
+            os.path.join(BACKEND, 'routers', 'remote_control.py'))
+        self.remote_control = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.remote_control)
+        self.remote_control._preview_cache['preview-old'] = {
+            'data': b'old-frame',
+            'content_type': 'image/jpeg',
+            'expires_at': 9999999999,
+            'edge_id': 'edge-1',
+        }
+
+    def test_unknown_preview_does_not_return_another_frame(self):
+        import asyncio
+        result = asyncio.run(
+            self.remote_control.get_cached_preview_frame('edge-1', 'preview-new'))
+        self.assertEqual(result['status'], 'pending')
+        self.assertIsNone(result['preview_url'])
+
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(
+                self.remote_control.get_preview_image_file('edge-1', 'preview-new'))
+        self.assertEqual(raised.exception.status_code, 404)
+
+
 if __name__ == '__main__':
     unittest.main()

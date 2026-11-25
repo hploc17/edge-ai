@@ -57,6 +57,8 @@ HISTORY_DB_FILE = DATA_DIR / "history.db"
 # Cột trung bình theo phút phục vụ dự báo (score/vehicle/density/flow...).
 # speed_sample_count đếm riêng số mẫu có vận tốc (vận tốc có thể NULL khi đường vắng).
 TIMELINE_FEATURE_COLUMNS = (
+    ("algorithm_version", "TEXT"),
+    ("score_sample_count", "INTEGER DEFAULT 0"),
     ("score_mean", "REAL"),
     ("vehicle_count_mean", "REAL"),
     ("density_mean", "REAL"),
@@ -66,6 +68,23 @@ TIMELINE_FEATURE_COLUMNS = (
     ("stopped_ratio_mean", "REAL"),
     ("speed_sample_count", "INTEGER DEFAULT 0"),
 )
+
+SPI_FIELDS = (
+    "algorithm_version", "method", "spi", "spi_level", "traffic_state",
+    "reference_speed_kmh", "score_thresholds", "speed_ratio_percent",
+    "speed_reduction_index", "valid_speed_tracks", "status_pending",
+    "status_pending_seconds", "status_confirm_seconds", "raw_traffic_status",
+    "representative_speed_kmh", "representative_speed_method", "hcm_los_proxy",
+    "free_flow_speed_kmh", "data_quality", "reason", "stopped_ratio", "pce",
+    "spi_thresholds", "raw_traffic_state", "stable_traffic_state", "minimum_valid_tracks",
+    "hcm_los_proxy_is_official", "hcm_los_proxy_thresholds", "density_pce_per_km_lane",
+    "density_pcu_per_km_lane", "pcu_weight_basis",
+    "median_speed_kmh", "forecast",
+)
+
+
+def _spi_fields(data):
+    return {key: data.get(key) for key in SPI_FIELDS}
 
 
 def _float_or_none(value):
@@ -107,6 +126,14 @@ def _init_history_db(db_path: Path):
             for col_name, col_type in TIMELINE_FEATURE_COLUMNS:
                 if col_name not in existing_cols:
                     conn.execute("ALTER TABLE traffic_timeline ADD COLUMN %s %s" % (col_name, col_type))
+            if "score_sample_count" not in existing_cols:
+                # Historical mixed buckets cannot be reconstructed. Exclude buckets
+                # whose latest status was UNKNOWN rather than interpreting zero as free.
+                conn.execute("""UPDATE traffic_timeline SET score_sample_count =
+                    CASE WHEN traffic_status IN ('FREE', 'SLOW', 'CONGESTED')
+                    THEN sample_count ELSE 0 END,
+                    score_mean = CASE WHEN traffic_status IN ('FREE', 'SLOW', 'CONGESTED')
+                    THEN COALESCE(score_mean, congestion_score) ELSE NULL END""")
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS congestion_snapshots (
@@ -204,10 +231,14 @@ class DataStore:
                         "current_vehicle_count", "stopped_vehicle_count",
                         "density_veh_per_km_lane", "counts_by_class",
                         "traffic", "system", "latest_health", "last_seen", "status",
-                        "pipeline_running", "pipeline_pid", "last_telemetry_at", "data_status"
+                        "pipeline_running", "pipeline_pid", "pipeline_source_type",
+                        "pipeline_source_name", "last_telemetry_at", "data_status"
                     ):
                         if k in cached and cached[k] is not None:
                             node[k] = cached[k]
+                    for key in SPI_FIELDS:
+                        if key in cached:
+                            node[key] = cached[key]
                     restored_count += 1
             print(f"[DataStore] Restored live state snapshot for {restored_count} node(s) from disk cache.")
 
@@ -502,6 +533,8 @@ class DataStore:
             n.setdefault("lane_count", seg.get("lane_count", 2))
         n.setdefault("pipeline_running", False)
         n.setdefault("pipeline_pid", None)
+        n.setdefault("pipeline_source_type", None)
+        n.setdefault("pipeline_source_name", None)
         n.setdefault("last_telemetry_at", None)
         n.setdefault("data_status", "idle")
         return n
@@ -702,11 +735,20 @@ class DataStore:
             nodes_items = list(self.nodes.items())
         for edge_id, node in nodes_items:
             snapshot[edge_id] = {
+                **_spi_fields(node),
                 "edge_id": edge_id,
                 "status": node.get("status", "offline"),
                 "last_seen": node.get("last_seen"),
                 "traffic_status": node.get("traffic_status", "FREE"),
                 "congestion_score": node.get("congestion_score", 0),
+                    "algorithm_version": node.get("algorithm_version"),
+                    "speed_ratio_percent": node.get("speed_ratio_percent"),
+                    "speed_reduction_index": node.get("speed_reduction_index"),
+                    "reference_speed_kmh": node.get("reference_speed_kmh"),
+                    "data_quality": node.get("data_quality"),
+                    "status_pending": node.get("status_pending", False),
+                    "status_pending_seconds": node.get("status_pending_seconds", 0.0),
+                    "status_confirm_seconds": node.get("status_confirm_seconds", 0.0),
                 "avg_speed_kmh": node.get("avg_speed_kmh", 0.0),
                 "current_vehicle_count": node.get("current_vehicle_count", 0),
                 "stopped_vehicle_count": node.get("stopped_vehicle_count", 0),
@@ -717,6 +759,8 @@ class DataStore:
                 "system": node.get("system", {}),
                 "pipeline_running": node.get("pipeline_running", False),
                 "pipeline_pid": node.get("pipeline_pid"),
+                "pipeline_source_type": node.get("pipeline_source_type"),
+                "pipeline_source_name": node.get("pipeline_source_name"),
                 "last_telemetry_at": node.get("last_telemetry_at"),
                 "data_status": node.get("data_status", "idle"),
             }
@@ -764,12 +808,21 @@ class DataStore:
                 seg["updated_at"] = datetime.now().isoformat()
         self._save_state_cache(force=False)
 
-    def update_pipeline_status(self, edge_id: str, running: bool, pid: Optional[int] = None):
+    def update_pipeline_status(
+        self,
+        edge_id: str,
+        running: bool,
+        pid: Optional[int] = None,
+        source_type: Optional[str] = None,
+        source_name: Optional[str] = None,
+    ):
         """Cập nhật trạng thái chạy của AI Pipeline trên Jetson."""
         with self._lock:
             node = self.nodes.get(edge_id)
             if node:
                 node["pipeline_running"] = running
+                node["pipeline_source_type"] = source_type if running else None
+                node["pipeline_source_name"] = source_name if running else None
                 if pid is not None:
                     node["pipeline_pid"] = pid
                 elif not running:
@@ -787,11 +840,14 @@ class DataStore:
             nodes_items = list(self.nodes.items())
         for edge_id, node in nodes_items:
             states[edge_id] = {
+                **_spi_fields(node),
                 "edge_id": edge_id,
                 "name": node.get("name"),
                 "status": node.get("status", "offline"),
                 "pipeline_running": node.get("pipeline_running", False),
                 "pipeline_pid": node.get("pipeline_pid"),
+                "pipeline_source_type": node.get("pipeline_source_type"),
+                "pipeline_source_name": node.get("pipeline_source_name"),
                 "data_status": node.get("data_status", "idle"),
                 "last_telemetry_at": node.get("last_telemetry_at"),
                 "last_seen": node.get("last_seen"),
@@ -828,18 +884,44 @@ class DataStore:
                 node["current_vehicle_count"] = telemetry.get("current_vehicle_count", 0)
                 node["stopped_vehicle_count"] = telemetry.get("stopped_vehicle_count", 0)
                 node["density_veh_per_km_lane"] = telemetry.get("density_veh_per_km_lane", 0.0)
+                # Clear omitted fields to avoid leaking a previous v3/reference state.
+                node.update(_spi_fields(telemetry))
+                # V3 indicator fields; congestion_score carries the display-only
+                # speed-reduction index for compatibility with existing clients.
+                for key in ("algorithm_version", "method", "spi", "spi_level",
+                            "traffic_state", "reference_speed_kmh",
+                            "speed_ratio_percent", "speed_reduction_index",
+                            "status_pending", "status_pending_seconds",
+                            "status_confirm_seconds",
+                            "valid_speed_tracks", "stopped_ratio", "pce",
+                            "data_quality", "reason", "spi_signalized"):
+                    if key in telemetry:
+                        node[key] = telemetry[key]
                 raw_counts = telemetry.get("counts_by_class", node.get("counts_by_class", {}))
                 node["counts_by_class"] = normalize_counts_by_class(raw_counts)
 
                 # Chuẩn hóa cấu trúc lồng node["traffic"]
                 node["traffic"] = {
+                    **_spi_fields(node),
                     "vehicle_count": node["current_vehicle_count"],
                     "average_speed": node["avg_speed_kmh"],
                     "congestion_level": node["traffic_status"],
                     "congestion_score": node["congestion_score"],
                     "stopped_vehicle_count": node["stopped_vehicle_count"],
                     "density_veh_per_km_lane": node["density_veh_per_km_lane"],
-                    "counts_by_class": node["counts_by_class"]
+                    "counts_by_class": node["counts_by_class"],
+                    "algorithm_version": node.get("algorithm_version"),
+                    "method": node.get("method"),
+                    "spi": node.get("spi"),
+                    "spi_level": node.get("spi_level"),
+                    "speed_ratio_percent": node.get("speed_ratio_percent"),
+                    "speed_reduction_index": node.get("speed_reduction_index"),
+                    "status_pending": node.get("status_pending"),
+                    "status_pending_seconds": node.get("status_pending_seconds"),
+                    "status_confirm_seconds": node.get("status_confirm_seconds"),
+                    "reference_speed_kmh": node.get("reference_speed_kmh"),
+                    "data_quality": node.get("data_quality"),
+                    "reason": node.get("reason"),
                 }
 
                 # Nếu telemetry gửi kèm edge_metrics (CPU, GPU, RAM, Temp) thì gộp vào nhánh system & latest_health
@@ -890,12 +972,27 @@ class DataStore:
                 segment_id = node.get("segment_id") or telemetry.get("segment_id")
                 if segment_id and segment_id in self.segments:
                     seg = self.segments[segment_id]
+                    seg.update(_spi_fields(node))
                     score = node["congestion_score"]
                     seg["congestion_score"] = score
                     seg["avg_speed_kmh"] = node["avg_speed_kmh"]
                     seg["current_vehicle_count"] = node["current_vehicle_count"]
                     seg["traffic_status"] = node["traffic_status"]
-                    seg["traffic_color"] = "#EF4444" if score >= 65 else ("#F59E0B" if score >= 35 else "#10B981")
+                    seg["traffic_color"] = (
+                        "#EF4444" if node["traffic_status"] == "CONGESTED"
+                        else "#F59E0B" if node["traffic_status"] == "SLOW"
+                        else "#10B981" if node["traffic_status"] == "FREE"
+                        else "#6B7280"
+                    )
+                    for key in ("algorithm_version", "method", "spi", "spi_level",
+                                "traffic_state", "reference_speed_kmh",
+                                "speed_ratio_percent", "speed_reduction_index",
+                                "status_pending", "status_pending_seconds",
+                                "status_confirm_seconds",
+                                "valid_speed_tracks", "stopped_ratio", "pce",
+                                "data_quality", "reason", "spi_signalized"):
+                        if key in node:
+                            seg[key] = node[key]
                     seg["updated_at"] = datetime.now().isoformat()
 
                 # Ghi nhận và tổng hợp dữ liệu lưu lượng vào SQLite theo phút (Fix D1)
@@ -908,7 +1005,7 @@ class DataStore:
                     # Đường vắng: Edge gửi avg_speed_kmh = null -> lưu NULL, không làm hỏng cả bản ghi phút
                     speed = _float_or_none(node.get("avg_speed_kmh"))
                     status = str(node.get("traffic_status", "FREE"))
-                    color = "#EF4444" if score >= 65 else ("#F59E0B" if score >= 35 else "#10B981")
+                    color = {"CONGESTED": "#EF4444", "SLOW": "#F59E0B", "FREE": "#10B981"}.get(status, "#6B7280")
                     vcount = int(node.get("current_vehicle_count") or 0)
 
                     self._record_timeline_sample(
@@ -922,6 +1019,7 @@ class DataStore:
                         traffic_status=status,
                         traffic_color=color,
                         vehicle_count=vcount,
+                        algorithm_version=node.get("algorithm_version"),
                         features={
                             "density": _float_or_none(telemetry.get("density_veh_per_km_lane")) or 0.0,
                             "density_pce": _float_or_none(
@@ -1038,7 +1136,8 @@ class DataStore:
     def _record_timeline_sample(self, segment_id: str, minute_bucket: str, timestamp: str,
                                 time_str: str, road_name: str, congestion_score: int,
                                 avg_speed_kmh: Optional[float], traffic_status: str, traffic_color: str,
-                                vehicle_count: int, features: Optional[Dict[str, float]] = None):
+                                vehicle_count: int, features: Optional[Dict[str, float]] = None,
+                                algorithm_version: Optional[str] = None):
         """Ghi nhận và tổng hợp dữ liệu lưu lượng theo phút vào SQLite (Fix D1).
 
         congestion_score/vehicle_count/traffic_status giữ giá trị MỚI NHẤT trong phút
@@ -1048,18 +1147,26 @@ class DataStore:
         """
         f = features or {}
         has_speed = 1 if avg_speed_kmh is not None else 0
+        has_score = int(traffic_status in ("FREE", "SLOW", "CONGESTED"))
         with self._db_lock:
             try:
                 conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
                 with conn:
+                    # A/B switches reset this minute's aggregate; never average
+                    # incompatible score models. The latest algorithm owns the bucket.
+                    conn.execute("""DELETE FROM traffic_timeline
+                        WHERE segment_id = ? AND minute_bucket = ?
+                        AND algorithm_version IS NOT ?""",
+                        (segment_id, minute_bucket, algorithm_version))
                     conn.execute("""
                         INSERT INTO traffic_timeline (
                             segment_id, minute_bucket, timestamp, time_str, road_name,
                             congestion_score, avg_speed_kmh, traffic_status, traffic_color,
                             vehicle_count, sample_count,
                             score_mean, vehicle_count_mean, density_mean, density_pce_mean,
-                            entry_rate_mean, flow_mean, stopped_ratio_mean, speed_sample_count
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                            entry_rate_mean, flow_mean, stopped_ratio_mean, speed_sample_count,
+                            score_sample_count, algorithm_version
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(segment_id, minute_bucket) DO UPDATE SET
                             congestion_score = excluded.congestion_score,
                             avg_speed_kmh = CASE
@@ -1074,7 +1181,8 @@ class DataStore:
                             vehicle_count = excluded.vehicle_count,
                             traffic_status = excluded.traffic_status,
                             traffic_color = excluded.traffic_color,
-                            score_mean = (COALESCE(traffic_timeline.score_mean, traffic_timeline.congestion_score) * traffic_timeline.sample_count + excluded.score_mean) / (traffic_timeline.sample_count + 1),
+                            score_mean = (COALESCE(traffic_timeline.score_mean, 0) * traffic_timeline.score_sample_count + COALESCE(excluded.score_mean, 0)) / NULLIF(traffic_timeline.score_sample_count + excluded.score_sample_count, 0),
+                            score_sample_count = traffic_timeline.score_sample_count + excluded.score_sample_count,
                             vehicle_count_mean = (COALESCE(traffic_timeline.vehicle_count_mean, traffic_timeline.vehicle_count) * traffic_timeline.sample_count + excluded.vehicle_count_mean) / (traffic_timeline.sample_count + 1),
                             density_mean = (COALESCE(traffic_timeline.density_mean, excluded.density_mean) * traffic_timeline.sample_count + excluded.density_mean) / (traffic_timeline.sample_count + 1),
                             density_pce_mean = (COALESCE(traffic_timeline.density_pce_mean, excluded.density_pce_mean) * traffic_timeline.sample_count + excluded.density_pce_mean) / (traffic_timeline.sample_count + 1),
@@ -1087,10 +1195,10 @@ class DataStore:
                     """, (
                         segment_id, minute_bucket, timestamp, time_str, road_name,
                         congestion_score, avg_speed_kmh, traffic_status, traffic_color, vehicle_count,
-                        float(congestion_score), float(vehicle_count),
+                        float(congestion_score) if has_score else None, float(vehicle_count),
                         float(f.get("density", 0.0)), float(f.get("density_pce", 0.0)),
                         float(f.get("entry_rate", 0.0)), float(f.get("flow", 0.0)),
-                        float(f.get("stopped_ratio", 0.0)), has_speed,
+                        float(f.get("stopped_ratio", 0.0)), has_speed, has_score, algorithm_version,
                     ))
                 conn.close()
             except Exception as e:
@@ -1103,8 +1211,8 @@ class DataStore:
                 conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute("""
-                    SELECT minute_bucket, timestamp, time_str,
-                           COALESCE(score_mean, congestion_score) AS score,
+                    SELECT minute_bucket, timestamp, time_str, algorithm_version,
+                           score_mean AS score,
                            avg_speed_kmh AS speed,
                            COALESCE(vehicle_count_mean, vehicle_count) AS vehicles,
                            density_mean AS density, density_pce_mean AS density_pce,
@@ -1131,7 +1239,7 @@ class DataStore:
                 cursor = conn.cursor()
                 if clean_date:
                     cursor.execute("""
-                        SELECT timestamp, time_str, segment_id, road_name,
+                        SELECT timestamp, time_str, segment_id, road_name, algorithm_version,
                                congestion_score, avg_speed_kmh, traffic_status,
                                traffic_color, vehicle_count
                         FROM traffic_timeline
@@ -1140,7 +1248,7 @@ class DataStore:
                     """, (segment_id, f"{clean_date}%"))
                 else:
                     cursor.execute("""
-                        SELECT timestamp, time_str, segment_id, road_name,
+                        SELECT timestamp, time_str, segment_id, road_name, algorithm_version,
                                congestion_score, avg_speed_kmh, traffic_status,
                                traffic_color, vehicle_count
                         FROM traffic_timeline
@@ -1183,18 +1291,21 @@ class DataStore:
                 color = "#64748B"
             elif data_status == "stale":
                 color = "#94A3B8"
-            elif score >= 65:
+            elif n.get("traffic_status") == "CONGESTED":
                 color = "#EF4444"
-            elif score >= 35:
+            elif n.get("traffic_status") == "SLOW":
                 color = "#F59E0B"
-            else:
+            elif n.get("traffic_status") == "FREE":
                 color = "#10B981"
+            else:
+                color = "#6B7280"
             seg = self.segments.get(n.get("segment_id", ""), {})
 
             features.append({
                 "type": "Feature",
                 "geometry": {"type": "Point", "coordinates": [float(lng), float(lat)]},
                 "properties": {
+                    **_spi_fields(n),
                     "edge_id": n.get("edge_id"),
                     "name": n.get("name"),
                     "camera_id": n.get("camera_id"),
@@ -1217,6 +1328,18 @@ class DataStore:
                     "last_telemetry_at": n.get("last_telemetry_at"),
                     "snapshot_url": n.get("snapshot_url"),
                     "last_seen": n.get("last_seen"),
+                    "algorithm_version": n.get("algorithm_version"),
+                    "method": n.get("method"),
+                    "spi": n.get("spi"),
+                    "spi_level": n.get("spi_level"),
+                    "speed_ratio_percent": n.get("speed_ratio_percent"),
+                    "speed_reduction_index": n.get("speed_reduction_index"),
+                    "reference_speed_kmh": n.get("reference_speed_kmh"),
+                    "valid_speed_tracks": n.get("valid_speed_tracks"),
+                    "stopped_ratio": n.get("stopped_ratio"),
+                    "pce": n.get("pce"),
+                    "data_quality": n.get("data_quality"),
+                    "reason": n.get("reason"),
                 }
             })
         return {"type": "FeatureCollection", "features": features}
@@ -1231,6 +1354,7 @@ class DataStore:
                 "type": "Feature",
                 "geometry": {"type": "LineString", "coordinates": coords},
                 "properties": {
+                    **_spi_fields(s),
                     "segment_id": s.get("segment_id"),
                     "road_name": s.get("road_name"),
                     "lane_count": s.get("lane_count", 2),
@@ -1239,10 +1363,19 @@ class DataStore:
                     "speed_limit_kmh": s.get("speed_limit_kmh", 60.0),
                     "congestion_score": s.get("congestion_score", 0),
                     "traffic_status": s.get("traffic_status", "FREE"),
-                    "traffic_color": s.get("traffic_color", "#10B981"),
+                    "traffic_color": ("#6B7280" if s.get("traffic_status") == "UNKNOWN"
+                                      else s.get("traffic_color", "#6B7280")),
                     "avg_speed_kmh": s.get("avg_speed_kmh", 0.0),
                     "vehicle_count": s.get("current_vehicle_count", 0),
                     "updated_at": s.get("updated_at"),
+                    "algorithm_version": s.get("algorithm_version"),
+                    "method": s.get("method"),
+                    "spi": s.get("spi"),
+                    "spi_level": s.get("spi_level"),
+                    "speed_ratio_percent": s.get("speed_ratio_percent"),
+                    "speed_reduction_index": s.get("speed_reduction_index"),
+                    "reference_speed_kmh": s.get("reference_speed_kmh"),
+                    "data_quality": s.get("data_quality"),
                 }
             })
         return {"type": "FeatureCollection", "features": features}
@@ -1267,5 +1400,3 @@ try:
 except Exception:
     pass
     sys.modules["webgis.backend.services.data_store"] = _curr_mod
-
-

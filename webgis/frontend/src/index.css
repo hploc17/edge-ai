@@ -7,6 +7,30 @@
   background-color: #f8fafc;
 }
 
+@theme {
+  --color-app: #f8fafc;
+  --color-surface: #ffffff;
+  --color-border: #e2e8f0;
+  --color-content: #0f172a;
+  --color-muted: #475569;
+  --color-action: #2563eb;
+  --color-action-hover: #1d4ed8;
+  --color-action-selected: #eff6ff;
+  --color-danger: #b91c1c;
+  --color-traffic-free: #16a34a;
+  --color-traffic-free-bg: #dcfce7;
+  --color-traffic-free-text: #166534;
+  --color-traffic-slow: #f59e0b;
+  --color-traffic-slow-bg: #fef3c7;
+  --color-traffic-slow-text: #92400e;
+  --color-traffic-congested: #dc2626;
+  --color-traffic-congested-bg: #fee2e2;
+  --color-traffic-congested-text: #991b1b;
+  --color-traffic-stale: #94a3b8;
+  --color-traffic-stale-bg: #f1f5f9;
+  --color-traffic-stale-text: #475569;
+}
+
 /* Custom pulsing dot markers for WebGIS nodes - Fixed anchor center */
 .pulsing-marker {
   width: 24px;
@@ -39,7 +63,7 @@
   top: 0;
   left: 0;
   opacity: 0.85;
-  animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+  animation: none;
 }
 
 @keyframes pulse-ring {
@@ -72,13 +96,13 @@
 }
 
 .pulsing-marker.selected-node-marker .pulsing-marker-core {
-  border: 3px solid #ffffff !important;
-  transform: scale(1.55) !important;
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.9), 0 0 24px 8px var(--marker-glow-color, rgba(16, 185, 129, 0.85)) !important;
+  border: 2px solid #2563eb !important;
+  transform: scale(1.1) !important;
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #2563eb !important;
 }
 
 .pulsing-marker.selected-node-marker .pulsing-marker-ring {
-  animation: pulse-ring-selected 1.6s cubic-bezier(0.215, 0.61, 0.355, 1) infinite !important;
+  animation: none !important;
 }
 
 @keyframes pulse-ring-selected {
@@ -155,11 +179,13 @@
 
 /* Clean White Light Theme Glassmorphism */
 .glass-panel {
-  background: rgba(255, 255, 255, 0.94);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  box-shadow: 0 10px 30px -5px rgba(15, 23, 42, 0.12), 0 4px 6px -2px rgba(15, 23, 42, 0.05);
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
 }
 
 /* Light theme custom scrollbars */

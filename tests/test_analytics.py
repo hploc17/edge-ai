@@ -22,6 +22,9 @@ from analytics.traffic_classifier import (  # noqa: E402
 from analytics.traffic_classifier_v2 import (  # noqa: E402
     ContextAwareTrafficAnalyzer, ContextAwareTrafficStateModel,
 )
+from analytics.traffic_classifier_v3 import (  # noqa: E402
+    classify_traffic_v3, spi_level_from_value,
+)
 
 ROI = [[100, 700], [1180, 700], [900, 200], [380, 200]]   # P1 gần-trái, P2 gần-phải, P3 xa-phải, P4 xa-trái
 VEHICLES = ('motorbike', 'car', 'truck', 'bus', 'bicycle')
@@ -222,6 +225,98 @@ class TestTrafficAnalyzer(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+class TestTrafficClassifierV3(unittest.TestCase):
+
+    def test_spi_boundaries_and_mapping(self):
+        cases = [
+            (0.0, 'HEAVY_CONGESTION', 'CONGESTED'),
+            (25.0, 'HEAVY_CONGESTION', 'CONGESTED'),
+            (25.1, 'MILD_CONGESTION', 'SLOW'),
+            (50.0, 'MILD_CONGESTION', 'SLOW'),
+            (50.1, 'SMOOTH', 'FREE'),
+            (75.0, 'SMOOTH', 'FREE'),
+            (75.1, 'VERY_SMOOTH', 'FREE'),
+            (100.0, 'VERY_SMOOTH', 'FREE'),
+        ]
+        for spi, level, state in cases:
+            result = classify_traffic_v3(
+                v_avg=spi / 100.0 * 40.0,
+                v_ref=40.0,
+                vehicle_count=1,
+                vehicle_speeds=[spi / 100.0 * 40.0],
+                valid_speed_tracks=1,
+                minimum_valid_tracks=1,
+            )
+            self.assertAlmostEqual(result['spi'], spi, places=2)
+            self.assertEqual(result['spi_level'], level)
+            self.assertEqual(result['traffic_state'], state)
+
+    def test_spi_clamps_above_100(self):
+        result = classify_traffic_v3(
+            v_avg=60.0, v_ref=40.0, vehicle_count=1,
+            vehicle_speeds=[60.0], valid_speed_tracks=1,
+            minimum_valid_tracks=1,
+        )
+        self.assertEqual(result['spi'], 100.0)
+
+    def test_zero_stopped_speed_is_valid(self):
+        result = classify_traffic_v3(
+            v_avg=0.0, v_ref=40.0, vehicle_count=2,
+            vehicle_speeds={1: {'speed_kmh': 0.0, 'has_moved': True},
+                            2: {'speed_kmh': 0.0, 'has_moved': True}},
+            valid_speed_tracks=2,
+            minimum_valid_tracks=2,
+            stopped_ratio=1.0,
+        )
+        self.assertEqual(result['data_quality'], 'VALID')
+        self.assertEqual(result['spi'], 0.0)
+        self.assertEqual(result['spi_level'], 'HEAVY_CONGESTION')
+
+    def test_empty_insufficient_and_config_cases(self):
+        empty = classify_traffic_v3(v_avg=None, v_ref=40.0, vehicle_count=0)
+        self.assertEqual(empty['data_quality'], 'EMPTY')
+        self.assertEqual(empty['congestion_score'], 0)
+
+        insufficient = classify_traffic_v3(
+            v_avg=None, v_ref=40.0, vehicle_count=3,
+            vehicle_speeds=[None], valid_speed_tracks=0,
+        )
+        self.assertEqual(insufficient['data_quality'], 'INSUFFICIENT_DATA')
+
+        missing_ref = classify_traffic_v3(v_avg=20.0, v_ref=None, vehicle_count=1)
+        self.assertEqual(missing_ref['data_quality'], 'CONFIG_REQUIRED')
+
+        zero_ref = classify_traffic_v3(v_avg=20.0, v_ref=0.0, vehicle_count=1)
+        self.assertEqual(zero_ref['data_quality'], 'CONFIG_REQUIRED')
+
+    def test_invalid_speeds_and_multiple_tracks(self):
+        for bad in (-1.0, float('nan'), float('inf')):
+            result = classify_traffic_v3(
+                v_avg=bad, v_ref=40.0, vehicle_count=1,
+                vehicle_speeds=[bad], valid_speed_tracks=1,
+            )
+            self.assertIn(result['data_quality'], ('INVALID_SPEED', 'INSUFFICIENT_DATA'))
+
+        result = classify_traffic_v3(
+            v_avg=20.0, v_ref=40.0, vehicle_count=3,
+            vehicle_speeds=[10.0, 20.0, 30.0],
+            valid_speed_tracks=3,
+        )
+        self.assertEqual(result['spi'], 50.0)
+        self.assertEqual(result['valid_speed_tracks'], 3)
+
+        stationary_inclusive = classify_traffic_v3(
+            v_avg=30.0, v_ref=40.0, vehicle_count=2,
+            vehicle_speeds={1: {'speed_kmh': 0.0, 'has_moved': False},
+                            2: {'speed_kmh': 30.0, 'has_moved': True}},
+            valid_speed_tracks=1,
+            minimum_valid_tracks=2,
+        )
+        self.assertEqual(stationary_inclusive['valid_speed_tracks'], 2)
+        self.assertEqual(stationary_inclusive['spi'], 37.5)
+        self.assertEqual(stationary_inclusive['spi_level'], 'MILD_CONGESTION')
+
+
 class TestContextAwareV2(unittest.TestCase):
 
     def make(self, context):

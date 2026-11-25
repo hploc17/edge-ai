@@ -6,10 +6,22 @@ Quản lý luồng phát trực tiếp On-Demand camera CSI từ Jetson Nano qua
 import asyncio
 import logging
 import os
+import socket
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, HTTPException, Request, Depends, Security
 from fastapi.responses import JSONResponse
-from services.auth_middleware import require_staff
+from services.auth_middleware import require_staff, security_bearer
+
+try:
+    from config import LIVE_REQUIRE_AUTH
+except ImportError:
+    LIVE_REQUIRE_AUTH = os.getenv("LIVE_REQUIRE_AUTH", "false").lower() in ("true", "1", "yes")
+
+async def require_live_access(credentials = Security(security_bearer)):
+    """Kiểm tra quyền bật/tắt luồng camera. Nếu LIVE_REQUIRE_AUTH=False thì cho phép truy cập mở."""
+    if not LIVE_REQUIRE_AUTH:
+        return {"userId": "guest", "role": "GUEST"}
+    return require_staff(credentials)
 
 try:
     from services.data_store import store
@@ -29,35 +41,60 @@ MEDIAMTX_HLS_PORT = int(os.getenv("MEDIAMTX_HLS_PORT", "8888"))
 MEDIAMTX_RTSP_PORT = int(os.getenv("MEDIAMTX_RTSP_PORT", "8554"))
 
 
+def get_local_lan_ip() -> str:
+    """Tự động phát hiện IP mạng LAN thực tế của máy chủ (dù dùng Wi-Fi, Ethernet, DHCP đổi IP)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+
+
 def _build_stream_urls(edge_id: str, request: Optional[Request] = None) -> dict:
     """Tự động suy ra URL phát trực tiếp (WebRTC / HLS / RTSP).
     
-    Fix V6: Tự động nhận diện hostname của client thay vì gán chết IP LAN 192.168.88.193.
-    Hỗ trợ chuyển đổi HTTP/HTTPS chống chặn mixed content và hỗ trợ URL cloud/domain reverse proxy.
+    Cơ chế tự động:
+      - Phía Client xem (WebRTC / HLS): Tự động ưu tiên hostname mà trình duyệt đang truy cập (localhost, IP LAN, domain).
+      - Phía Ingest Jetson (RTSP): Tự động phát hiện IP LAN thực tế của server để Jetson ngoài mạng LAN đẩy luồng về đúng chỗ.
     """
+    server_lan_ip = get_local_lan_ip()
     host_env = os.getenv("MEDIAMTX_HOST", "").strip()
 
     client_host = None
     client_scheme = "http"
     if request:
         client_host = request.url.hostname
-        # Nhận diện scheme HTTPS khi đứng sau Reverse Proxy (Nginx/Cloudflare)
         proto_hdr = request.headers.get("x-forwarded-proto") or request.url.scheme
         if proto_hdr:
             client_scheme = proto_hdr.lower()
 
-    if client_host and client_host not in ("localhost", "127.0.0.1"):
-        chosen_host = client_host
-    elif host_env and host_env not in ("localhost", "127.0.0.1", ""):
-        chosen_host = host_env
+    # 1. Host cho trình duyệt xem WebRTC/HLS:
+    # Nếu client truy cập qua domain / IP nào (kể cả localhost hay IP LAN), dùng chính hostname đó!
+    if client_host and client_host not in ("", "0.0.0.0"):
+        chosen_client_host = client_host
+    elif server_lan_ip and server_lan_ip not in ("", "127.0.0.1"):
+        chosen_client_host = server_lan_ip
+    elif host_env and host_env not in ("", "0.0.0.0"):
+        chosen_client_host = host_env
     else:
-        chosen_host = host_env or client_host or "localhost"
+        chosen_client_host = "localhost"
 
-    webrtc_base = os.getenv("MEDIAMTX_PUBLIC_WEBRTC_URL", f"{client_scheme}://{chosen_host}:{MEDIAMTX_WEBRTC_PORT}").rstrip("/")
-    hls_base = os.getenv("MEDIAMTX_PUBLIC_HLS_URL", f"{client_scheme}://{chosen_host}:{MEDIAMTX_HLS_PORT}").rstrip("/")
+    webrtc_base = os.getenv("MEDIAMTX_PUBLIC_WEBRTC_URL", f"{client_scheme}://{chosen_client_host}:{MEDIAMTX_WEBRTC_PORT}").rstrip("/")
+    hls_base = os.getenv("MEDIAMTX_PUBLIC_HLS_URL", f"{client_scheme}://{chosen_client_host}:{MEDIAMTX_HLS_PORT}").rstrip("/")
 
-    # Host mà Jetson Nano đẩy luồng RTSP về:
-    ingest_host = os.getenv("MEDIAMTX_INGEST_HOST", chosen_host)
+    # 2. Host cho Jetson Nano đẩy RTSP về MediaMTX:
+    # Jetson là thiết bị biên riêng biệt trong mạng LAN, BẮT BUỘC dùng IP LAN thực tế của máy chủ!
+    ingest_env = os.getenv("MEDIAMTX_INGEST_HOST", "").strip()
+    if ingest_env and ingest_env not in ("localhost", "127.0.0.1", ""):
+        ingest_host = ingest_env
+    elif server_lan_ip and server_lan_ip not in ("localhost", "127.0.0.1", ""):
+        ingest_host = server_lan_ip
+    elif host_env and host_env not in ("localhost", "127.0.0.1", ""):
+        ingest_host = host_env
+    else:
+        ingest_host = "localhost"
+
     rtsp_base = os.getenv("MEDIAMTX_PUBLIC_RTSP_URL", f"rtsp://{ingest_host}:{MEDIAMTX_RTSP_PORT}").rstrip("/")
 
     return {
@@ -102,10 +139,10 @@ async def _send_live_mqtt_command(edge_id: str, action: str, params: Optional[di
         )
 
 
-@router.post("/api/v1/devices/{edge_id}/live/start", dependencies=[Depends(require_staff)])
-@router.post("/api/v1/nodes/{edge_id}/live/start", dependencies=[Depends(require_staff)])
+@router.post("/api/v1/devices/{edge_id}/live/start", dependencies=[Depends(require_live_access)])
+@router.post("/api/v1/nodes/{edge_id}/live/start", dependencies=[Depends(require_live_access)])
 async def start_device_live(edge_id: str, request: Request):
-    """Bật luồng phát trực tiếp camera CSI từ Jetson Nano lên MediaMTX (On-Demand - Yêu cầu Staff)."""
+    """Bật luồng phát trực tiếp camera CSI từ Jetson Nano lên MediaMTX (On-Demand)."""
     node = store.get_node(edge_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Thiết bị '{edge_id}' không tồn tại")
@@ -146,10 +183,10 @@ async def start_device_live(edge_id: str, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/api/v1/devices/{edge_id}/live/stop", dependencies=[Depends(require_staff)])
-@router.post("/api/v1/nodes/{edge_id}/live/stop", dependencies=[Depends(require_staff)])
+@router.post("/api/v1/devices/{edge_id}/live/stop", dependencies=[Depends(require_live_access)])
+@router.post("/api/v1/nodes/{edge_id}/live/stop", dependencies=[Depends(require_live_access)])
 async def stop_device_live(edge_id: str):
-    """Dừng luồng phát trực tiếp camera CSI trên Jetson Nano (Yêu cầu Staff)."""
+    """Dừng luồng phát trực tiếp camera CSI trên Jetson Nano."""
     node = store.get_node(edge_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Thiết bị '{edge_id}' không tồn tại")
@@ -167,10 +204,10 @@ async def stop_device_live(edge_id: str):
         return {"edge_id": edge_id, "status": "stopped", "message": str(e)}
 
 
-@router.post("/api/v1/devices/{edge_id}/live/keepalive", dependencies=[Depends(require_staff)])
-@router.post("/api/v1/nodes/{edge_id}/live/keepalive", dependencies=[Depends(require_staff)])
+@router.post("/api/v1/devices/{edge_id}/live/keepalive", dependencies=[Depends(require_live_access)])
+@router.post("/api/v1/nodes/{edge_id}/live/keepalive", dependencies=[Depends(require_live_access)])
 async def keepalive_device_live(edge_id: str):
-    """Gửi ping keep-alive định kỳ từ người xem WebGIS để duy trì luồng (Yêu cầu Staff)."""
+    """Gửi ping keep-alive định kỳ từ người xem WebGIS để duy trì luồng."""
     from services.mqtt_service import mqtt_service
     from routers.remote_control import _new_command_id
 

@@ -19,11 +19,11 @@ Upload endpoint (gọi từ Jetson, không phải từ Frontend):
 import asyncio
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 
 from fastapi import APIRouter, Header, HTTPException, Request, UploadFile, Depends
 from fastapi import File, Form
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from services.data_store import store
 from services.mqtt_service import mqtt_service
@@ -60,6 +60,11 @@ class SetRoiRequest(BaseModel):
     road_length_m: float = 50.0
     lane_count: int = 2
     traffic_context: Optional[str] = "signalized"
+    algorithm_version: Literal["v1", "v2", "v3"] = "v3"
+    reference_speed_kmh: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    free_flow_speed_kmh: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    minimum_valid_tracks: int = Field(3, ge=1, strict=True)
+    status_confirm_seconds: float = Field(10.0, ge=0, allow_inf_nan=False)
 
 
 class StartPipelineRequest(BaseModel):
@@ -303,12 +308,8 @@ async def get_preview_image_file(edge_id: str, request_id: str):
     Hỗ trợ hiển thị trực tiếp trong thẻ <img> HTML mà không bị chặn bởi thiếu Bearer header."""
     _clean_expired_previews()
     item = _preview_cache.get(request_id)
-    if not item:
-        matches = [v for v in _preview_cache.values() if v.get("edge_id") == edge_id]
-        if matches:
-            item = matches[-1]
-        else:
-            raise HTTPException(status_code=404, detail="Preview frame not found or expired")
+    if not item or item.get("edge_id") != edge_id:
+        raise HTTPException(status_code=404, detail="Preview frame not found or expired")
     from fastapi import Response
     return Response(
         content=item["data"],
@@ -322,20 +323,15 @@ async def get_cached_preview_frame(edge_id: str, request_id: str):
     """Lấy frame preview đã cache trong RAM (phục vụ fallback khi WebSocket rớt gói)."""
     _clean_expired_previews()
     item = _preview_cache.get(request_id)
-    if not item:
-        # Nếu chưa tìm thấy đúng request_id, tìm frame mới nhất của node
-        matches = [v for v in _preview_cache.values() if v.get("edge_id") == edge_id]
-        if matches:
-            item = matches[-1]
-        else:
-            return {
-                "status": "pending",
-                "edge_id": edge_id,
-                "request_id": request_id,
-                "preview_url": None,
-                "image_data": None,
-                "message": "Preview frame not ready yet",
-            }
+    if not item or item.get("edge_id") != edge_id:
+        return {
+            "status": "pending",
+            "edge_id": edge_id,
+            "request_id": request_id,
+            "preview_url": None,
+            "image_data": None,
+            "message": "Preview frame not ready yet",
+        }
     preview_url = f"/api/v1/nodes/{edge_id}/preview/{request_id}/image"
     import base64 as _b64
     img_b64 = _b64.b64encode(item["data"]).decode("utf-8")
@@ -412,6 +408,11 @@ async def set_remote_roi(edge_id: str, req: SetRoiRequest):
             "road_length_m": req.road_length_m,
             "lane_count": req.lane_count,
             "traffic_context": req.traffic_context or "signalized",
+            "algorithm_version": req.algorithm_version,
+            "reference_speed_kmh": req.reference_speed_kmh,
+            "free_flow_speed_kmh": req.free_flow_speed_kmh,
+            "minimum_valid_tracks": req.minimum_valid_tracks,
+            "status_confirm_seconds": req.status_confirm_seconds,
         }
     )
 
@@ -419,7 +420,8 @@ async def set_remote_roi(edge_id: str, req: SetRoiRequest):
         "edge_id": edge_id,
         "command_id": command_id,
         "status": "sent",
-        "message": f"ROI configuration sent to Jetson. Listening on command-result for confirmation.",
+        "restart_required": True,
+        "message": "Configuration sent; command-result confirms persistence. Stop then start with roi_config=remote to apply. Explicit CLI overrides saved config; environment is fallback only.",
     }
 
 
@@ -512,6 +514,8 @@ async def get_pipeline_status(edge_id: str):
         "command_id": command_id,
         "pipeline_running": node.get("pipeline_running", False),
         "pipeline_pid": node.get("pipeline_pid"),
+        "pipeline_source_type": node.get("pipeline_source_type"),
+        "pipeline_source_name": node.get("pipeline_source_name"),
         "status": "sent",
         "message": "request_status sent. Listen on WebSocket for command-result.",
     }
@@ -574,4 +578,3 @@ async def read_device_spatial_info(edge_id: str):
                 "road_name": fallback_data.get("road_name", ""),
             }
         }
-

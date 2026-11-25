@@ -65,11 +65,14 @@ export const CongestionHistoryModal: React.FC<CongestionHistoryModalProps> = ({
   };
 
   const currentRecord = records[currentIndex];
+  const historyScore = (record: HistoryRecord) => record.traffic_status === "UNKNOWN" || record.traffic_status === "STALE"
+    ? null : record.algorithm_version === "v3" ? (record.speed_reduction_index ?? record.congestion_score) : record.congestion_score;
 
   // ECharts Line Option for 24h Trend on Light Theme
   const chartOption = {
     backgroundColor: "transparent",
     tooltip: { trigger: "axis" },
+    legend: { top: 0 },
     grid: { left: "4%", right: "4%", bottom: "10%", top: "15%", containLabel: true },
     xAxis: {
       type: "category",
@@ -96,29 +99,21 @@ export const CongestionHistoryModal: React.FC<CongestionHistoryModalProps> = ({
       }
     ],
     series: [
-      {
-        name: "Điểm kẹt xe",
+      ...["v1", "v2", "v3", "không rõ"].map((version, index) => ({
+        name: `Điểm · ${version}`,
         type: "line",
-        smooth: true,
-        data: records.map((r) => r.congestion_score),
-        lineStyle: { width: 3, color: "#ef4444" },
-        areaStyle: {
-          color: {
-            type: "linear",
-            x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [
-              { offset: 0, color: "rgba(239, 68, 68, 0.35)" },
-              { offset: 1, color: "rgba(239, 68, 68, 0.0)" }
-            ]
-          }
-        }
-      },
+        smooth: false,
+        connectNulls: false,
+        data: records.map(r => (r.algorithm_version ?? "không rõ") === version ? historyScore(r) : null),
+        lineStyle: { width: 3, color: ["#a855f7", "#f97316", "#ef4444", "#64748b"][index] },
+      })),
       {
         name: "Vận tốc trung bình",
         type: "line",
         yAxisIndex: 1,
         smooth: true,
-        data: records.map((r) => r.avg_speed_kmh),
+        connectNulls: false,
+        data: records.map((r) => r.traffic_status === "UNKNOWN" || r.traffic_status === "STALE" ? null : r.avg_speed_kmh),
         lineStyle: { width: 2.5, color: "#0284c7" }
       }
     ]
@@ -191,8 +186,8 @@ export const CongestionHistoryModal: React.FC<CongestionHistoryModalProps> = ({
                   </span>
                   <span className="text-slate-600 font-medium">
                     Điểm kẹt:{" "}
-                    <strong className={currentRecord.congestion_score >= 65 ? "text-red-600" : "text-amber-600"}>
-                      {currentRecord.congestion_score}/100
+                    <strong className="text-slate-800">
+                      {historyScore(currentRecord) ?? "--"}/100 ({currentRecord.algorithm_version ?? "không rõ phiên bản"})
                     </strong>
                   </span>
                   <span className="text-slate-600 font-medium">
@@ -202,6 +197,7 @@ export const CongestionHistoryModal: React.FC<CongestionHistoryModalProps> = ({
               )}
             </div>
 
+            <p className="text-xs text-slate-600">Điểm v1/v2/v3 dùng phương pháp khác nhau, không so sánh trực tiếp. Khoảng trống là dữ liệu thiếu/cũ hoặc phiên bản khác, không phải điểm 0.</p>
             {/* Slider track */}
             <input
               type="range"

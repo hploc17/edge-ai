@@ -76,6 +76,9 @@ dist_packages/
 
 # 9. Bản sao lưu thủ công & dữ liệu runtime
 _backup_truoc_khi_sua_*/
+.backup_compare/
+.aiignore
+bench_results/
 webgis/backend/data/node_state_cache.json
 webgis/backend/data/logs/
 .pipeline.lock

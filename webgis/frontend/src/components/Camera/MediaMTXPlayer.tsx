@@ -1,16 +1,47 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import Hls from "hls.js";
 import {
   startMediaMTXLive,
+  stopMediaMTXLive,
+  getMediaMTXLiveInfo,
   sendMediaMTXKeepAlive,
   type MediaMTXStreamInfo,
 } from "../../services/liveStream";
-import { RefreshCw, AlertTriangle, Video, Zap } from "lucide-react";
+import { RefreshCw, AlertTriangle, Video, Zap, RotateCcw } from "lucide-react";
 
 interface MediaMTXPlayerProps {
   edgeId: string;
   className?: string;
   onLiveStarted?: (info: MediaMTXStreamInfo) => void;
+}
+
+/**
+ * Tự động chuẩn hóa địa chỉ máy chủ stream sang hostname trình duyệt đang truy cập.
+ * Giúp người dùng dù truy cập qua localhost, IP mạng LAN hay tên miền đều kết nối đúng cổng MediaMTX.
+ */
+function normalizeStreamUrls(info: MediaMTXStreamInfo): MediaMTXStreamInfo {
+  if (typeof window === "undefined") return info;
+  const currentHost = window.location.hostname;
+  if (!currentHost) return info;
+
+  const replaceHost = (urlStr: string) => {
+    if (!urlStr) return urlStr;
+    try {
+      const u = new URL(urlStr);
+      // Giữ nguyên cổng (8889, 8888, 8554) nhưng đồng bộ hostname với trình duyệt
+      u.hostname = currentHost;
+      return u.toString();
+    } catch {
+      return urlStr;
+    }
+  };
+
+  return {
+    ...info,
+    webrtc_url: replaceHost(info.webrtc_url),
+    whep_url: replaceHost(info.whep_url),
+    hls_url: replaceHost(info.hls_url),
+  };
 }
 
 export const MediaMTXPlayer: React.FC<MediaMTXPlayerProps> = ({
@@ -23,6 +54,7 @@ export const MediaMTXPlayer: React.FC<MediaMTXPlayerProps> = ({
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [mode, setMode] = useState<"webrtc" | "hls">("webrtc");
   const [isMixedContent, setIsMixedContent] = useState<boolean>(false);
+  const [retryCount, setRetryCount] = useState<number>(0);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -43,23 +75,47 @@ export const MediaMTXPlayer: React.FC<MediaMTXPlayerProps> = ({
       setStatus("connecting");
       setErrorMessage("");
 
-      try {
-        const info = await startMediaMTXLive(edgeId);
-        if (isCancelled) return;
+      let info: MediaMTXStreamInfo | null = null;
 
-        setStreamInfo(info);
+      try {
+        // Thử phát lệnh bật luồng camera
+        info = await startMediaMTXLive(edgeId);
+      } catch (err: any) {
+        // Fallback: nếu lệnh start bị 401 hoặc lỗi, thử đọc thông tin luồng có sẵn
+        try {
+          info = await getMediaMTXLiveInfo(edgeId);
+        } catch (readErr) {
+          // Fallback cuối: tự tạo URL stream MediaMTX theo hostname hiện tại
+          const currentHost = (typeof window !== "undefined" && window.location.hostname) || "localhost";
+          info = {
+            edge_id: edgeId,
+            status: "ready",
+            webrtc_url: `http://${currentHost}:8889/live/${edgeId}/`,
+            whep_url: `http://${currentHost}:8889/live/${edgeId}/whep`,
+            hls_url: `http://${currentHost}:8888/live/${edgeId}/index.m3u8`,
+            rtsp_url: `rtsp://${currentHost}:8554/live/${edgeId}`,
+          };
+        }
+      }
+
+      if (isCancelled) return;
+
+      if (info) {
+        const normalized = normalizeStreamUrls(info);
+        setStreamInfo(normalized);
         setStatus("live");
-        onLiveStarted?.(info);
+        onLiveStarted?.(normalized);
 
         // Bật interval ping keep-alive mỗi 20 giây
+        if (keepAliveTimerRef.current !== null) {
+          window.clearInterval(keepAliveTimerRef.current);
+        }
         keepAliveTimerRef.current = window.setInterval(() => {
           sendMediaMTXKeepAlive(edgeId);
         }, 20000);
-      } catch (err: any) {
-        if (isCancelled) return;
+      } else {
         setStatus("error");
-        const msg = err.response?.data?.detail || err.message || "Không thể kết nối đến camera Jetson";
-        setErrorMessage(msg);
+        setErrorMessage("Không thể kết nối đến camera Jetson.");
       }
     }
 
@@ -77,8 +133,16 @@ export const MediaMTXPlayer: React.FC<MediaMTXPlayerProps> = ({
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
+
+      // Unmount là tín hiệu đóng phiên on-demand; không để keep-alive hoặc
+      // phiên live cũ tiếp tục giữ quyền mở luồng sau khi người dùng dừng.
+      void stopMediaMTXLive(edgeId);
     };
-  }, [edgeId]);
+  }, [edgeId, retryCount]);
+
+  const handleRetry = useCallback(() => {
+    setRetryCount((prev) => prev + 1);
+  }, []);
 
   // 3. Xử lý HLS Player khi ở chế độ 'hls'
   useEffect(() => {
@@ -209,6 +273,14 @@ export const MediaMTXPlayer: React.FC<MediaMTXPlayerProps> = ({
             <AlertTriangle className="w-6 h-6 text-rose-500" />
             <p className="text-xs font-semibold">Không thể xem trực tiếp</p>
             <span className="text-[11px] text-slate-400 max-w-sm">{errorMessage}</span>
+            <button
+              type="button"
+              onClick={handleRetry}
+              className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs font-medium border border-slate-700 transition-colors"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Thử lại</span>
+            </button>
           </div>
         )}
 

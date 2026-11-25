@@ -17,13 +17,15 @@ def get_timeline(
 
     # Summary metrics for the day
     # Phút đường vắng lưu avg_speed_kmh = NULL: bỏ qua khi thống kê để tránh TypeError
-    scores = [r["congestion_score"] for r in records if r.get("congestion_score") is not None]
+    scores = [r["congestion_score"] for r in records
+              if r.get("congestion_score") is not None
+              and r.get("traffic_status", "FREE") in ("FREE", "SLOW", "CONGESTED")]
     speeds = [r["avg_speed_kmh"] for r in records if r.get("avg_speed_kmh") is not None]
 
     return {
         "segment_id": target_seg,
         "total_intervals": len(records),
-        "peak_congestion_score": max(scores) if scores else 0,
+        "peak_congestion_score": max(scores) if scores else None,
         "min_speed_kmh": min(speeds) if speeds else 0.0,
         "avg_speed_kmh": round(sum(speeds) / len(speeds), 1) if speeds else 0.0,
         "records": records

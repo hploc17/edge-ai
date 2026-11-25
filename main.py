@@ -359,14 +359,16 @@ def add_traffic_display_meta(pyds, batch_meta, frame_meta, geometry,
         if value > 0
     ) or 'empty'
     summary_text = (
-        'FPS %.1f | ROI %d | STATUS %s | SCORE %d\n'
+        'FPS %.1f | ROI %d | STATUS %s | %s %.1f\n'
         'Counts: %s | raw:%d\n'
         'Speed avg:%s median:%s km/h | stopped:%d (%.0f%%)\n'
         'Speed/class km/h: %s\n'
         'Density raw:%.1f v/km (PCE:%.1f pcu/km) | entries:%d/min | flow:%.1f v/m\n'
         '%s' % (
             fps, metrics['current_vehicle_count'],
-            metrics['traffic_status'], metrics['congestion_score'],
+            metrics['traffic_status'],
+            ('SPEED-REDUCTION' if metrics.get('algorithm_version') == 'v3' else 'SCORE'),
+            metrics['congestion_score'],
             counts_text, sum(raw_counts.values()),
             _optional_number(metrics['avg_speed_kmh']),
             _optional_number(metrics['median_speed_kmh']),
@@ -391,6 +393,27 @@ def add_traffic_display_meta(pyds, batch_meta, frame_meta, geometry,
     summary.set_bg_clr = 1
     summary.text_bg_clr.set(0.0, 0.0, 0.0, 0.74)
     pyds.nvds_add_display_meta_to_frame(frame_meta, display)
+
+
+def resolve_algorithm_version(cli_version, traffic_config):
+    """Explicit CLI overrides win; saved config precedes environment fallback."""
+    version = str(cli_version or traffic_config.get('algorithm_version')
+                  or os.getenv('TRAFFIC_ALGORITHM_VERSION') or 'v2').strip().lower()
+    if version not in ('v1', 'v2', 'v3'):
+        raise ValueError('algorithm_version must be v1, v2, or v3')
+    return version
+
+
+def resolve_reference_speed(cli_speed, traffic_config):
+    """Config null explicitly clears reference speed, including env defaults."""
+    value = cli_speed
+    if value is None:
+        value = (traffic_config['reference_speed_kmh'] if 'reference_speed_kmh' in traffic_config
+                 else os.getenv('SPI_REFERENCE_SPEED_KMH'))
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def main():
@@ -451,9 +474,35 @@ def main():
         help='Log detailed per-track diagnostics and timing drift when congestion score > 40'
     )
     parser.add_argument(
-        '--algo-version', default=os.getenv('TRAFFIC_ALGORITHM_VERSION', 'v2'),
-        choices=['v1', 'v2'],
-        help='Traffic classification algorithm version: v1 (Snapshot) or v2 (Context Dwell-Time)'
+        '--algo-version', default=None,
+        choices=['v1', 'v2', 'v3'],
+        help='Traffic analysis algorithm version: v1, v2, or v3 (reference-speed reduction)'
+    )
+    parser.add_argument(
+        '--reference-speed-kmh',
+        type=float,
+        default=None,
+        help='V3 configured reference speed in km/h; configure per camera/ROI'
+    )
+    parser.add_argument(
+        '--free-flow-speed-kmh', type=float, default=None,
+        help='Optional independent free-flow speed for HCM LOS proxy'
+    )
+    parser.add_argument(
+        '--minimum-valid-tracks', type=int, default=None,
+        help='V3 minimum valid speed tracks required before classification'
+    )
+    parser.add_argument(
+        '--free-speed-ratio-min-percent', type=float, default=None,
+        help='Legacy option; V3 uses fixed SPI boundary 50 percent'
+    )
+    parser.add_argument(
+        '--congested-speed-ratio-max-percent', type=float, default=None,
+        help='Legacy option; V3 uses fixed SPI boundary 25 percent'
+    )
+    parser.add_argument(
+        '--status-confirm-seconds', type=float, default=None,
+        help='V3 minimum persistence time before changing displayed status'
     )
     parser.add_argument(
         '--traffic-context', default=os.getenv('TRAFFIC_CONTEXT', 'signalized'),
@@ -468,6 +517,46 @@ def main():
                         help='Minimum tracker confidence for speed estimation (default: 0.20)')
     parser.add_argument('--max-bbox-area-change', type=float, default=0.60,
                         help='Max allowed bbox area fraction change between frames (default: 0.60)')
+
+    # Benchmark / Profiler (measure_jetson integration)
+    auto_measure_default = os.getenv('AUTO_MEASURE', os.getenv('MEASURE_PERF', '1')).strip().lower() in ('1', 'true', 'yes')
+    parser.add_argument(
+        '--measure', action='store_true',
+        default=auto_measure_default,
+        help='Tự động đo hiệu năng Jetson (FPS, GPU, CPU, RAM, Temp, Power, Net) song song với pipeline (Mặc định: Bật nếu AUTO_MEASURE=1)'
+    )
+    parser.add_argument(
+        '--no-measure', dest='measure', action='store_false',
+        help='Tắt chế độ đo hiệu năng'
+    )
+    parser.add_argument(
+        '--measure-phase', default=None,
+        help='Tên kịch bản đo benchmark (vd: baseline, osd_off, live_on, v3_spi). Nếu không truyền sẽ tự động lấy theo tên video/camera'
+    )
+    parser.add_argument(
+        '--measure-duration', type=int, default=None,
+        help='Thời gian đo (giây). Mặc định: đo liên tục đến khi video kết thúc hoặc bấm Ctrl+C'
+    )
+    parser.add_argument(
+        '--measure-warmup', type=int, default=os.getenv('MEASURE_WARMUP', '0'),
+        help='Số giây warm-up bỏ qua trước khi ghi số liệu (mặc định: 0s)'
+    )
+    parser.add_argument(
+        '--measure-interval', type=float, default=os.getenv('MEASURE_INTERVAL', '1.0'),
+        help='Chu kỳ lấy mẫu hiệu năng (giây, mặc định: 1.0s)'
+    )
+    parser.add_argument(
+        '--measure-out', default=os.getenv('MEASURE_OUT', 'bench_results'),
+        help='Thư mục lưu kết quả benchmark (mặc định: bench_results)'
+    )
+    parser.add_argument(
+        '--measure-no-tegrastats', action='store_true',
+        help='Bỏ qua tegrastats (chạy thử nghiệm trên máy không phải Jetson)'
+    )
+    parser.add_argument(
+        '--measure-auto-stop', action='store_true',
+        help='Tự động dừng pipeline khi hết thời gian --measure-duration'
+    )
     args = parser.parse_args()
 
     if not acquire_single_instance_lock():
@@ -540,7 +629,9 @@ def main():
         normalized_to_pixels(p) for p in traffic_config.get('exclusion_polygons', [])
     ]
 
-    algo_version = str(args.algo_version).strip().lower()
+    # Explicit CLI overrides persist across remote config restarts.
+    algo_version = resolve_algorithm_version(args.algo_version, traffic_config)
+    args.algo_version = algo_version
     traffic_context = str(traffic_config.get('traffic_context') or args.traffic_context or 'signalized').strip().lower()
 
     if algo_version == 'v2':
@@ -567,6 +658,39 @@ def main():
             ignore_never_moved=True
         )
         print('[ALGORITHM] >>> Engine Activated: V2 (Context-Aware Dwell-Time | Context: %s) <<<' % traffic_context)
+    elif algo_version == 'v3':
+        from analytics.traffic_classifier_v3 import SPITrafficAnalyzer
+        reference_speed = resolve_reference_speed(args.reference_speed_kmh, traffic_config)
+        minimum_valid_tracks = args.minimum_valid_tracks
+        if minimum_valid_tracks is None:
+            minimum_valid_tracks = traffic_config.get(
+                'minimum_valid_tracks', os.getenv('SPI_MIN_VALID_TRACKS', '3')
+            )
+        confirm_seconds = args.status_confirm_seconds
+        if confirm_seconds is None:
+            confirm_seconds = traffic_config.get(
+                'status_confirm_seconds',
+                os.getenv('SPI_STATUS_CONFIRM_SECONDS', '10')
+            )
+        analyzer = SPITrafficAnalyzer(
+            road_length_m=traffic_config['road_length_m'],
+            lane_count=traffic_config['lane_count'],
+            reference_speed_kmh=reference_speed,
+            free_flow_speed_kmh=(args.free_flow_speed_kmh if args.free_flow_speed_kmh is not None
+                                 else traffic_config.get('free_flow_speed_kmh')),
+            forecast_enabled=os.getenv('ENABLE_EDGE_FORECAST', '0').lower() in ('1', 'true', 'yes'),
+            minimum_valid_tracks=int(minimum_valid_tracks),
+            free_speed_ratio_min_percent=50.0,
+            congested_speed_ratio_max_percent=25.0,
+            status_confirm_seconds=float(confirm_seconds),
+            forecast_history_seconds=args.forecast_history,
+            forecast_minimum_history_seconds=args.forecast_min_history,
+            exclusion_polygons=exclusion_polys,
+            ignore_never_moved=False,
+            traffic_context=traffic_context
+        )
+        print('[ALGORITHM] >>> Engine Activated: V3 (Reference-speed reduction | Reference: %s km/h) <<<' %
+              ('NOT CONFIGURED' if reference_speed is None else ('%.1f' % reference_speed)))
     else:
         state_model = TrafficStateModel(
             stopped_speed_kmh=args.stopped_speed_kmh,
@@ -643,12 +767,16 @@ def main():
         # Các lệnh khác (get_health, request_status, reload_config, snapshot...) do Jetson Agent xử lý;
         # reload_config được Agent thực hiện bằng cách khởi động lại pipeline với cấu hình mới.
 
-        # Gói Live Streaming: MediaMTX On-Demand
+    # Gói Live Streaming: chỉ đăng ký cho Camera CSI. Video file không có
+    # live camera và không nhận các lệnh start/keepalive MediaMTX.
+    if kind == 'csi':
         try:
             from core.live_stream import register_live_handlers
             register_live_handlers(cmd_handler)
         except Exception as _live_reg_err:
             print('[MAIN] Live stream command handler registration notice: %s' % _live_reg_err)
+    else:
+        print('[MAIN] Live stream disabled for file source: %s' % resolved_source)
 
     if not args.no_snapshot:
         if not os.getenv('EDGE_TOKEN', '').strip():
@@ -1106,6 +1234,41 @@ def main():
     bus = pipeline.get_bus()
     bus.add_signal_watch()
     bus_handler = bus.connect('message', on_bus_message)
+
+    profiler = None
+    if getattr(args, 'measure', False):
+        try:
+            from measure_jetson import JetsonPerformanceProfiler
+            phase_to_use = args.measure_phase
+            if not phase_to_use or phase_to_use == 'baseline':
+                if kind == 'file' and resolved_source:
+                    stem = Path(resolved_source).stem
+                    phase_to_use = stem if stem else 'video_file'
+                elif kind == 'csi':
+                    phase_to_use = 'camera_csi'
+                elif kind == 'rtsp':
+                    phase_to_use = 'rtsp_stream'
+                else:
+                    phase_to_use = 'baseline'
+                if getattr(args, 'algo_version', None):
+                    phase_to_use = '%s_%s' % (phase_to_use, args.algo_version)
+
+            profiler = JetsonPerformanceProfiler(
+                phase=phase_to_use,
+                duration=args.measure_duration,
+                warmup=args.measure_warmup,
+                interval=args.measure_interval,
+                out_dir=args.measure_out,
+                no_tegrastats=args.measure_no_tegrastats,
+                get_fps_fn=lambda: current_fps[0],
+                on_duration_reached=request_stop if args.measure_auto_stop else None,
+                pid=os.getpid()
+            )
+            profiler.start()
+        except Exception as e:
+            print('[MEASURE WARNING] Khong the khoi dong profiler: %s' % e, file=sys.stderr)
+            profiler = None
+
     try:
         state_result = pipeline.set_state(Gst.State.PLAYING)
         if state_result == Gst.StateChangeReturn.FAILURE:
@@ -1118,6 +1281,12 @@ def main():
         bus.disconnect(bus_handler)
         bus.remove_signal_watch()
         mux.release_request_pad(mux_sink)
+
+        if profiler is not None:
+            try:
+                profiler.stop()
+            except Exception as e:
+                print('[MEASURE WARNING] Loi khi dung profiler: %s' % e, file=sys.stderr)
 
         if snapshot_pad is not None and snapshot_probe_id is not None:
             snapshot_pad.remove_probe(snapshot_probe_id)
@@ -1137,6 +1306,7 @@ def main():
 
     if last_metrics[0] is not None:
         print('[FINAL] %s' % json.dumps(last_metrics[0], sort_keys=True))
+    sys.exit(0)
 
 
 if __name__ == '__main__':

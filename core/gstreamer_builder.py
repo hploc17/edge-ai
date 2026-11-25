@@ -483,6 +483,9 @@ def build_pipeline(args, source, kind, Gst):
         # nvegltransform is REQUIRED on Tegra / Jetson Nano between nvdsosd and nveglglessink
         transform = Gst.ElementFactory.make('nvegltransform', 'nvegl_transform')
         sink = _make(Gst, 'nveglglessink', 'sink')
+        # Do not block the DeepStream pipeline on the display clock.  For file
+        # sources, syncing to the original timestamps can make the rendered
+        # result stutter when inference/tracking is slower than the source FPS.
         sink.set_property('sync', 0)
         if transform:
             pipeline.add(transform)
@@ -501,7 +504,12 @@ def build_pipeline(args, source, kind, Gst):
     tracker.link(nvvidconv_osd)
     nvvidconv_osd.link(osd)
 
-    live_stream_enabled = os.getenv("LIVE_STREAM_ENABLED", "1").lower() in ("1", "true", "yes")
+    # MediaMTX chỉ được dựng cho Camera CSI. Video file không được chạm vào
+    # encoder/RTSP/live branch để tránh tốn tài nguyên và gây ảnh hưởng decoder.
+    live_stream_enabled = (
+        kind == 'csi' and
+        os.getenv("LIVE_STREAM_ENABLED", "1").lower() in ("1", "true", "yes")
+    )
     print("[GSTREAMER BUILDER] Live stream config: enabled=%s, backend=%s" % (
         live_stream_enabled, os.getenv("BACKEND_URL", "http://localhost:8000")
     ))

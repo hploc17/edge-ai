@@ -25,6 +25,7 @@ interface PendingNodeApprovalModalProps {
   /** Tọa độ Admin đã click trên bản đồ (từ App.tsx) */
   pickedCoords: { lat: number; lng: number } | null;
   onNodeApproved: () => void;
+  onPendingChanged?: () => void;
   /** Truyền node đang tồn tại nếu mở modal ở chế độ "Sửa cấu hình" */
   editingNode?: NodeDetail | null;
   initialSelectedEdgeId?: string | null;
@@ -37,6 +38,7 @@ export const PendingNodeApprovalModal: React.FC<PendingNodeApprovalModalProps> =
   onEnablePickMode,
   pickedCoords,
   onNodeApproved,
+  onPendingChanged,
   editingNode = null,
   initialSelectedEdgeId = null,
 }) => {
@@ -256,9 +258,11 @@ export const PendingNodeApprovalModal: React.FC<PendingNodeApprovalModalProps> =
   };
 
   const handleReject = async (edgeId: string) => {
+    if (!window.confirm("Bạn có chắc muốn từ chối thiết bị này không?")) return;
     try {
       await api.rejectPendingNode(edgeId);
       setPendingNodes(prev => prev.filter(n => n.edge_id !== edgeId));
+      onPendingChanged?.();
       if (selectedNode?.edge_id === edgeId) {
         setSelectedNode(null);
         setStage("list");

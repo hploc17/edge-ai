@@ -9,7 +9,32 @@ export interface GeoJSONFeatureCollection<G, P> {
   features: GeoJSONFeature<G, P>[];
 }
 
-export interface NodeProperties {
+export interface TrafficV3Fields {
+  forecast?: {
+    ready?: boolean;
+    reason?: string;
+    history_seconds?: number;
+    required_history_seconds?: number;
+    confidence?: string;
+    r_squared?: number | null;
+    horizons?: Record<string, { congestion_score?: number; spi?: number; status?: string }>;
+  };
+  median_speed_kmh?: number | null;
+  representative_speed_kmh?: number | null;
+  representative_speed_method?: string;
+  minimum_valid_tracks?: number;
+  free_flow_speed_kmh?: number | null;
+  raw_traffic_state?: string;
+  raw_traffic_status?: string;
+  stable_traffic_state?: string;
+  score_thresholds?: { free_max: number; slow_max: number };
+  spi_thresholds?: { free_above_percent: number; congested_at_or_below_percent: number };
+  hcm_los_proxy?: string | null;
+  hcm_los_proxy_is_official?: boolean;
+  hcm_los_proxy_thresholds?: Record<string, number>;
+}
+
+export interface NodeProperties extends TrafficV3Fields {
   edge_id: string;
   name: string;
   mac_address?: string;
@@ -22,7 +47,22 @@ export interface NodeProperties {
   traffic_status: "FREE" | "SLOW" | "CONGESTED" | "UNKNOWN" | "STALE";
   data_status?: "live" | "stale" | "idle";
   last_telemetry_at?: string;
-  congestion_score: number;
+  congestion_score: number | null;
+  algorithm_version?: "v1" | "v2" | "v3";
+  method?: string;
+  spi?: number | null;
+  spi_level?: "HEAVY_CONGESTION" | "MILD_CONGESTION" | "SMOOTH" | "VERY_SMOOTH" | null;
+  speed_ratio_percent?: number | null;
+  speed_reduction_index?: number | null;
+  status_pending?: boolean;
+  status_pending_seconds?: number;
+  status_confirm_seconds?: number;
+  reference_speed_kmh?: number | null;
+  valid_speed_tracks?: number;
+  stopped_ratio?: number;
+  pce?: number;
+  data_quality?: "VALID" | "INSUFFICIENT_DATA" | "CONFIG_REQUIRED" | "INVALID_SPEED";
+  reason?: string | null;
   avg_speed_kmh: number;
   vehicle_count: number;
   marker_color: string;
@@ -38,14 +78,25 @@ export interface NodeProperties {
   };
 }
 
-export interface SegmentProperties {
+export interface SegmentProperties extends TrafficV3Fields {
   segment_id: string;
   road_name: string;
   lane_count: number;
   road_length_m: number;
   road_width_m: number;
   speed_limit_kmh: number;
-  congestion_score: number;
+  congestion_score: number | null;
+  algorithm_version?: "v1" | "v2" | "v3";
+  method?: string;
+  spi?: number | null;
+  spi_level?: "HEAVY_CONGESTION" | "MILD_CONGESTION" | "SMOOTH" | "VERY_SMOOTH" | null;
+  speed_ratio_percent?: number | null;
+  speed_reduction_index?: number | null;
+  status_pending?: boolean;
+  status_pending_seconds?: number;
+  status_confirm_seconds?: number;
+  reference_speed_kmh?: number | null;
+  data_quality?: "VALID" | "INSUFFICIENT_DATA" | "CONFIG_REQUIRED" | "INVALID_SPEED";
   traffic_status: "FREE" | "SLOW" | "CONGESTED" | "UNKNOWN" | "STALE";
   traffic_color: string;
   avg_speed_kmh: number;
@@ -77,6 +128,10 @@ export interface NodeDetail extends NodeProperties {
   };
   latest_health?: DeviceHealthData;
   snapshot_url?: string;
+  pipeline_running?: boolean;
+  pipeline_pid?: number | null;
+  pipeline_source_type?: "csi" | "file" | null;
+  pipeline_source_name?: string | null;
 }
 
 export interface DeviceHealthData {
@@ -129,11 +184,13 @@ export interface SummaryKPIs {
 }
 
 export interface HistoryRecord {
+  algorithm_version?: "v1" | "v2" | "v3";
+  speed_reduction_index?: number | null;
   timestamp: string;
   time_str: string;
   segment_id: string;
   road_name: string;
-  congestion_score: number;
+  congestion_score: number | null;
   avg_speed_kmh: number;
   traffic_status: string;
   traffic_color: string;

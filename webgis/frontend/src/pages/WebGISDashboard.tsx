@@ -14,6 +14,7 @@ import type { GeoJSONFeatureCollection, NodeDetail, SummaryKPIs, HistoryRecord }
 import { api } from "../services/api";
 import { wsService } from "../services/websocket";
 import { useAuth } from "../context/AuthContext";
+import { getTrafficStatus, trafficTelemetry } from "../lib/trafficStatus";
 
 export const WebGISDashboard: React.FC = () => {
   const { isStaff } = useAuth();
@@ -25,7 +26,7 @@ export const WebGISDashboard: React.FC = () => {
   const [kpis, setKpis] = useState<SummaryKPIs | null>(null);
 
   // Basemap & Layer visibility
-  const [basemap, setBasemap] = useState<string>("google");
+  const [basemap, setBasemap] = useState<string>("streets");
   const [layersConfig, setLayersConfig] = useState({
     nodes: true,
     segments: true,
@@ -55,6 +56,19 @@ export const WebGISDashboard: React.FC = () => {
   const [editingNodeForApproval, setEditingNodeForApproval] = useState<NodeDetail | null>(null);
   const [initialEdgeIdForApproval, setInitialEdgeIdForApproval] = useState<string | null>(null);
   const [pickingForPendingNode, setPickingForPendingNode] = useState<string | null>(null);
+
+  const refreshPendingCount = useCallback(async () => {
+    if (!isStaff) {
+      setPendingCount(0);
+      return;
+    }
+    try {
+      const pendingNodes = await api.getPendingNodes();
+      setPendingCount(pendingNodes.length);
+    } catch (err) {
+      console.error("Failed to load pending node count:", err);
+    }
+  }, [isStaff]);
 
   // Coordinate Picking on Map
   const [isPickingLocation, setIsPickingLocation] = useState(false);
@@ -87,9 +101,23 @@ export const WebGISDashboard: React.FC = () => {
             stopped_vehicle_count: live.stopped_vehicle_count ?? n.stopped_vehicle_count,
             density_veh_per_km_lane: live.density_veh_per_km_lane ?? n.density_veh_per_km_lane,
             counts_by_class: live.counts_by_class ?? n.counts_by_class,
+            algorithm_version: live.algorithm_version ?? n.algorithm_version,
+            method: live.method ?? n.method,
+            spi: live.spi ?? n.spi,
+            spi_level: live.spi_level ?? n.spi_level,
+            speed_ratio_percent: live.speed_ratio_percent ?? n.speed_ratio_percent,
+            speed_reduction_index: live.speed_reduction_index ?? n.speed_reduction_index,
+            status_pending: live.status_pending ?? n.status_pending,
+            status_pending_seconds: live.status_pending_seconds ?? n.status_pending_seconds,
+            status_confirm_seconds: live.status_confirm_seconds ?? n.status_confirm_seconds,
+            reference_speed_kmh: live.reference_speed_kmh ?? n.reference_speed_kmh,
+            valid_speed_tracks: live.valid_speed_tracks ?? n.valid_speed_tracks,
+            data_quality: live.data_quality ?? n.data_quality,
+            reason: live.reason ?? n.reason,
             latest_health: live.latest_health ?? n.latest_health,
             status: live.status ?? n.status,
             last_seen: live.last_seen ?? n.last_seen,
+            ...trafficTelemetry(live),
           };
         }
         return n;
@@ -128,6 +156,10 @@ export const WebGISDashboard: React.FC = () => {
     fetchAllData();
   }, [fetchAllData]);
 
+  useEffect(() => {
+    refreshPendingCount();
+  }, [refreshPendingCount]);
+
   // Real-time WebSocket connection
   useEffect(() => {
     wsService.connect();
@@ -140,7 +172,13 @@ export const WebGISDashboard: React.FC = () => {
 
     const unsubscribe = wsService.subscribe((msg) => {
       if (msg.type === "telemetry") {
-        const t = msg.data;
+        const t = msg.data ?? msg;
+        // Telemetry hiện tại không luôn mang timestamp. Khi thiếu timestamp,
+        // xóa timestamp snapshot cũ để drawer không suy diễn nhầm là stale.
+        const telemetryTimestamp = t.last_seen || t.last_telemetry_at || t.timestamp || t.updated_at;
+        const telemetryFreshness = telemetryTimestamp
+          ? { last_seen: telemetryTimestamp, last_telemetry_at: telemetryTimestamp, data_status: "live" as const }
+          : { last_seen: undefined, last_telemetry_at: undefined, data_status: "live" as const };
         setNodesGeoJSON((prev) => {
           if (!prev) return prev;
           return {
@@ -148,17 +186,19 @@ export const WebGISDashboard: React.FC = () => {
             features: prev.features.map((f) => {
               if (f.properties.edge_id === msg.edge_id) {
                 const score = t.congestion_score;
-                const color = score >= 65 ? "#EF4444" : score >= 35 ? "#F59E0B" : "#10B981";
+                const color = getTrafficStatus(t.traffic_status, score, undefined, Date.now(), t.algorithm_version).color;
                 return {
                   ...f,
                   properties: {
                     ...f.properties,
                     congestion_score: score,
+                    ...trafficTelemetry(t),
                     traffic_status: t.traffic_status,
                     avg_speed_kmh: t.avg_speed_kmh,
                     vehicle_count: t.current_vehicle_count,
                     status: "online",
                     pipeline_running: true,
+                    ...telemetryFreshness,
                     marker_color: color
                   }
                 };
@@ -176,12 +216,14 @@ export const WebGISDashboard: React.FC = () => {
                   status: "online",
                   pipeline_running: true,
                   congestion_score: t.congestion_score,
+                  ...trafficTelemetry(t),
                   traffic_status: t.traffic_status,
                   avg_speed_kmh: t.avg_speed_kmh,
                   current_vehicle_count: t.current_vehicle_count,
                   stopped_vehicle_count: t.stopped_vehicle_count,
                   density_veh_per_km_lane: t.density_veh_per_km_lane,
                   counts_by_class: t.counts_by_class,
+                  ...telemetryFreshness,
                 }
               : n
           )
@@ -195,8 +237,8 @@ export const WebGISDashboard: React.FC = () => {
 
         setSegmentsGeoJSON((prev) => {
           if (!prev || !targetSegmentId) return prev;
-          const score = t.congestion_score ?? 0;
-          const color = score >= 65 ? "#EF4444" : score >= 35 ? "#F59E0B" : "#10B981";
+          const score = t.congestion_score;
+          const color = getTrafficStatus(t.traffic_status, score, undefined, Date.now(), t.algorithm_version).color;
           return {
             ...prev,
             features: prev.features.map((f) => {
@@ -206,6 +248,7 @@ export const WebGISDashboard: React.FC = () => {
                   properties: {
                     ...f.properties,
                     congestion_score: score,
+                    ...trafficTelemetry(t),
                     traffic_status: t.traffic_status,
                     traffic_color: color,
                     avg_speed_kmh: t.avg_speed_kmh,
@@ -239,12 +282,14 @@ export const WebGISDashboard: React.FC = () => {
           return {
             ...prev,
             congestion_score: t.congestion_score,
+            ...trafficTelemetry(t),
             traffic_status: t.traffic_status,
             avg_speed_kmh: t.avg_speed_kmh,
             vehicle_count: t.current_vehicle_count,
             stopped_vehicle_count: t.stopped_vehicle_count,
             density_veh_per_km_lane: t.density_veh_per_km_lane,
             counts_by_class: t.counts_by_class,
+            ...telemetryFreshness,
             latest_health: updatedHealth
           };
         });
@@ -404,7 +449,7 @@ export const WebGISDashboard: React.FC = () => {
               congestion_score: 0,
               avg_speed_kmh: 0,
               vehicle_count: 0,
-              marker_color: "#10B981",
+              marker_color: getTrafficStatus(rawNode.traffic_status, rawNode.congestion_score).color,
               last_seen: rawNode.last_seen || rawNode.timestamp
             }
           };
@@ -472,7 +517,7 @@ export const WebGISDashboard: React.FC = () => {
                         ...f.properties,
                         ...segData,
                         traffic_color: segData?.traffic_color || f.properties.traffic_color,
-                        congestion_score: segData?.congestion_score ?? f.properties.congestion_score,
+                        congestion_score: segData?.congestion_score !== undefined ? segData.congestion_score : f.properties.congestion_score,
                         traffic_status: segData?.traffic_status || f.properties.traffic_status,
                       }
                     };
@@ -498,7 +543,7 @@ export const WebGISDashboard: React.FC = () => {
                   speed_limit_kmh: segData?.speed_limit_kmh || 60.0,
                   traffic_status: segData?.traffic_status || "FREE",
                   congestion_score: segData?.congestion_score || 0,
-                  traffic_color: segData?.traffic_color || "#10B981",
+                  traffic_color: segData?.traffic_color || getTrafficStatus(segData?.traffic_status, segData?.congestion_score).color,
                   avg_speed_kmh: segData?.avg_speed_kmh || 0,
                   vehicle_count: segData?.vehicle_count || 0,
                   ...segData
@@ -608,6 +653,7 @@ export const WebGISDashboard: React.FC = () => {
 
   // Handle Node Click
   const handleSelectNode = async (edgeId: string) => {
+    setIsFleetOpen(false);
     setSelectedNodeId(edgeId);
     setSelectNodeTrigger(Date.now());
     try {
@@ -669,7 +715,11 @@ export const WebGISDashboard: React.FC = () => {
           setHistorySegmentId("segment-001");
           setIsHistoryOpen(true);
         }}
-        onOpenFleet={() => setIsFleetOpen(true)}
+        onOpenFleet={() => {
+          setSelectedNodeId(null);
+          setSelectedNodeDetail(null);
+          setIsFleetOpen(true);
+        }}
         onOpenAddNode={() => setIsAddNodeOpen(true)}
         onOpenPendingApproval={() => setIsPendingApprovalOpen(true)}
       />
@@ -782,6 +832,13 @@ export const WebGISDashboard: React.FC = () => {
             setIsFleetOpen(false);
             setIsAddNodeOpen(true);
           }}
+          pendingCount={pendingCount}
+          onOpenPendingApproval={() => {
+            setIsFleetOpen(false);
+            setEditingNodeForApproval(null);
+            setInitialEdgeIdForApproval(null);
+            setIsPendingApprovalOpen(true);
+          }}
           onRefreshNodes={fetchAllData}
           onOpenCamera={(node) => setCameraModalNode(node)}
           onOpenRemote={(node) => setRemoteNode(node)}
@@ -828,10 +885,11 @@ export const WebGISDashboard: React.FC = () => {
           }
           onNodeApproved={() => {
             fetchAllData();
-            setPendingCount(prev => Math.max(0, prev - 1));
+            refreshPendingCount();
             setEditingNodeForApproval(null);
             setInitialEdgeIdForApproval(null);
           }}
+          onPendingChanged={refreshPendingCount}
           editingNode={editingNodeForApproval}
           initialSelectedEdgeId={initialEdgeIdForApproval}
         />

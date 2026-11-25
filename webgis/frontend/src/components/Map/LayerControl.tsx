@@ -44,7 +44,7 @@ export const LayerControl: React.FC<LayerControlProps> = ({
             {[
               { id: "google", label: "🗺️ Google Maps" },
               { id: "google_satellite", label: "🛰️ Google Vệ tinh" },
-              { id: "light", label: "🏙️ Carto Sáng" },
+              { id: "light", label: "Carto Positron (API key)" },
               { id: "streets", label: "🛣️ OpenStreetMap" }
             ].map((b) => (
               <button

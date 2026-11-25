@@ -4,6 +4,8 @@ import { X, Gauge, Car, AlertTriangle, Cpu, History, Radio, Ruler, Terminal, Cam
 import type { NodeDetail } from "../../types/gis";
 import { API_HOST_URL } from "../../services/api";
 import { useAuth } from "../../context/AuthContext";
+import { getTrafficStatus } from "../../lib/trafficStatus";
+import { TrafficUsageHelp } from "./TrafficUsageHelp";
 
 interface NodeDashboardDrawerProps {
   node: NodeDetail | null;
@@ -45,7 +47,9 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
   ].filter(d => d.value > 0);
 
   // Hiển thị placeholder nếu chưa có dữ liệu hoặc dữ liệu stale (Fix L7)
-  const isStale = node.traffic_status === "STALE" || (node as any).data_status === "stale";
+  const lastUpdated = node.last_telemetry_at || node.last_seen;
+  const statusInfo = getTrafficStatus(node.traffic_status, node.congestion_score, lastUpdated, Date.now(), node.algorithm_version);
+  const isStale = statusInfo.status === "STALE";
   const hasData = totalVehicles > 0 && !isStale;
 
   // ECharts Donut Option for Vehicle Classification
@@ -94,24 +98,9 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
     ]
   };
 
-  const getStatusBadge = (status: string) => {
-    if (isStale) {
-      return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-600 border border-slate-300">MẤT DỮ LIỆU</span>;
-    }
-    switch (status) {
-      case "CONGESTED":
-        return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-red-100 text-red-700 border border-red-300">ÙN TẮC</span>;
-      case "SLOW":
-        return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-amber-100 text-amber-700 border border-amber-300">ĐÔNG XE</span>;
-      case "STALE":
-        return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-600 border border-slate-300">MẤT DỮ LIỆU</span>;
-      case "UNKNOWN":
-      case "idle":
-        return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-500 border border-slate-200">CHỜ DỮ LIỆU</span>;
-      default:
-        return <span className="px-2.5 py-1 text-xs font-bold rounded-full bg-emerald-100 text-emerald-700 border border-emerald-300">THÔNG THOÁNG</span>;
-    }
-  };
+  const getStatusBadge = () => (
+    <span className={`px-2.5 py-1 text-xs font-medium rounded-lg border ${statusInfo.chipClassName}`}>{statusInfo.label}</span>
+  );
 
   return (
     <div className="absolute top-20 right-3 bottom-5 w-96 z-20 flex flex-col rounded-2xl glass-panel text-slate-800 shadow-2xl border border-slate-200 animate-in slide-in-from-right duration-300 overflow-hidden">
@@ -121,7 +110,7 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
           <div className="flex items-center gap-2 mb-1">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span>
             <span className="text-xs font-mono text-blue-600 font-bold">{node.edge_id}</span>
-            {getStatusBadge(node.traffic_status)}
+            {getStatusBadge()}
           </div>
           <h2 className="text-sm font-bold text-slate-900 line-clamp-1">{node.name}</h2>
           <p className="text-xs text-slate-500 font-medium">{node.road_name || "Tuyến đường chính"}</p>
@@ -151,38 +140,48 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
 
       {/* Drawer Body */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3.5">
+        <TrafficUsageHelp />
+        {node.algorithm_version === "v3" && node.status_pending && <p className="text-xs text-amber-700">Đang xác nhận trạng thái mới: {node.status_pending_seconds ?? 0}/{node.status_confirm_seconds ?? 10} giây.</p>}
+        {node.algorithm_version === "v3" && <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs space-y-2">
+          <p><strong>Chất lượng dữ liệu:</strong> {({ VALID: "Hợp lệ", INSUFFICIENT_DATA: "Chưa đủ xe hợp lệ", CONFIG_REQUIRED: "Cần cấu hình tốc độ tham chiếu", INVALID_SPEED: "Tốc độ không hợp lệ" } as Record<string, string>)[node.data_quality ?? ""] ?? "Chưa có dữ liệu"} ({node.data_quality ?? "UNKNOWN"}).</p>
+          <p>Trạng thái: {node.status_pending ? "Đang chờ xác nhận thay đổi" : "Không có thay đổi đang chờ xác nhận"}. Xe hợp lệ: {node.valid_speed_tracks ?? "--"}/{node.minimum_valid_tracks ?? 3} tối thiểu.</p>
+          <p><strong>HCM LOS tham khảo:</strong> {isStale || statusInfo.status === "UNKNOWN" ? "--" : (node.hcm_los_proxy ?? "--")}; tốc độ dòng tự do: {node.free_flow_speed_kmh ?? "--"} km/h. Đây là chỉ báo tham khảo theo tốc độ, không phải đánh giá HCM chính thức; cần cấu hình tốc độ dòng tự do để có kết quả.</p>
+          <div><strong>Dự báo thử nghiệm:</strong>
+            {node.forecast?.ready && !isStale && statusInfo.status !== "UNKNOWN" ? <>
+              {Object.entries(node.forecast.horizons ?? {}).map(([horizon, prediction]) => <p key={horizon}>{horizon}: SPI {prediction.spi ?? "--"}; điểm {prediction.congestion_score ?? "--"}; {getTrafficStatus(prediction.status, prediction.congestion_score, undefined, Date.now(), "v3").label}.</p>)}
+              <p>Độ phù hợp xu hướng R²: {node.forecast.r_squared ?? "--"} ({node.forecast.confidence ?? "--"}), không phải xác suất đúng. Ngoại suy có thể sai khi chu kỳ đèn hoặc lưu lượng thay đổi.</p>
+            </> : <p>Chưa sẵn sàng: {isStale ? "Dữ liệu đã cũ" : node.forecast?.reason || `Đang tích lũy lịch sử ${node.forecast?.history_seconds ?? 0}/${node.forecast?.required_history_seconds ?? "--"} giây`}. Bật ENABLE_EDGE_FORECAST=1 trên Jetson và khởi động lại pipeline nếu muốn dùng dự báo.</p>}
+          </div>
+        </div>}
         {/* Metric Cards Grid */}
         <div className="grid grid-cols-2 gap-2.5">
           <div className="p-3 rounded-xl bg-slate-50/90 border border-slate-200 flex flex-col justify-between shadow-sm">
             <div className="flex items-center justify-between text-xs text-slate-500 font-medium mb-1">
-              <span>Vận tốc dòng xe</span>
+              <span>{node.algorithm_version === "v3" ? "Tốc độ trung vị hợp lệ" : "Vận tốc dòng xe"}</span>
               <Gauge className="w-4 h-4 text-blue-600" />
             </div>
             <div className="flex items-baseline gap-1">
-              <span className="text-2xl font-black text-blue-700">{node.avg_speed_kmh}</span>
+              <span className="text-2xl font-black text-blue-700">{node.algorithm_version === "v3" ? (isStale || statusInfo.status === "UNKNOWN" ? "--" : (node.representative_speed_kmh ?? node.median_speed_kmh ?? "--")) : node.avg_speed_kmh}</span>
               <span className="text-xs text-slate-500">km/h</span>
             </div>
-            <div className="w-full bg-slate-200 h-1.5 rounded-full mt-2 overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-red-500 via-amber-400 to-emerald-500 rounded-full"
-                style={{ width: `${Math.min(100, (node.avg_speed_kmh / 60) * 100)}%` }}
-              />
-            </div>
+            <div className="text-[11px] text-slate-600 mt-2">Trạng thái: <span className="font-medium">{statusInfo.label}</span></div>
           </div>
 
           <div className="p-3 rounded-xl bg-slate-50/90 border border-slate-200 flex flex-col justify-between shadow-sm">
             <div className="flex items-center justify-between text-xs text-slate-500 font-medium mb-1">
-              <span>Điểm kẹt xe</span>
+              <span>{node.algorithm_version === "v3" ? "Điểm ùn tắc (100 − SPI)" : "Congestion score"}</span>
               <AlertTriangle className="w-4 h-4 text-amber-600" />
             </div>
-            <div className="flex items-baseline gap-1">
-              <span className={`text-2xl font-black ${node.congestion_score >= 65 ? "text-red-600" : "text-amber-600"}`}>
-                {node.congestion_score}
+            <div className="flex items-baseline gap-1 tabular-nums">
+              <span className="text-2xl font-semibold text-slate-900">
+                {isStale || statusInfo.status === "UNKNOWN" ? "--" : (node.algorithm_version === "v3" ? (node.speed_reduction_index ?? "--") : (node.congestion_score ?? "--"))}
               </span>
               <span className="text-xs text-slate-500">/ 100</span>
             </div>
             <div className="text-[11px] text-slate-500 mt-2">
-              Dừng đỗ: <strong className="text-slate-800">{node.stopped_vehicle_count || 0} xe</strong>
+              {node.algorithm_version === "v3"
+                ? (node.reason || (node.data_quality === "VALID" ? `SPI: ${node.spi ?? "--"}; tham chiếu: ${node.reference_speed_kmh ?? "--"} km/h; xe hợp lệ: ${node.valid_speed_tracks ?? "--"}` : "Chưa đủ dữ liệu hợp lệ"))
+                : <>Dừng đỗ: <strong className="text-slate-800">{node.stopped_vehicle_count || 0} xe</strong></>}
             </div>
           </div>
 
@@ -336,7 +335,7 @@ export const NodeDashboardDrawer: React.FC<NodeDashboardDrawerProps> = ({
         {onOpenCamera && (
           <button
             onClick={onOpenCamera}
-            className="w-full flex items-center justify-center space-x-2 py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-xs font-bold transition shadow-md shadow-emerald-600/25 cursor-pointer"
+            className="w-full flex items-center justify-center space-x-2 py-3 px-4 rounded-lg bg-action hover:bg-action-hover text-white text-xs font-medium transition cursor-pointer"
           >
             <Camera className="w-4 h-4" />
             <span>📸 Xem Cam & Chụp ảnh theo yêu cầu</span>

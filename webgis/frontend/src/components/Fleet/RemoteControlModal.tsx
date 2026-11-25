@@ -20,6 +20,7 @@ import axios from "axios";
 import { wsService } from "../../services/websocket";
 import { API_HOST_URL } from "../../services/api";
 import { MediaMTXPlayer } from "../Camera/MediaMTXPlayer";
+import { TrafficUsageHelp } from "../Dashboard/TrafficUsageHelp";
 
 const API_BASE = `${API_HOST_URL}/api/v1`;
 
@@ -42,6 +43,10 @@ interface RoiConfig {
 
 type DrawMode = "detection" | "analysis" | null;
 type Stage = "idle" | "loading_videos" | "selecting_video" | "loading_preview" | "preview_ready" | "drawing" | "saving_roi" | "pipeline_control";
+type PipelineSourceType = "csi" | "file";
+
+const parsePipelineSourceType = (value: unknown): PipelineSourceType | null =>
+  value === "csi" || value === "file" ? value : null;
 
 interface RemoteControlModalProps {
   edgeId: string;
@@ -145,12 +150,20 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
   onRefreshNodes,
 }) => {
   const [stage, setStage] = useState<Stage>("idle");
+  const [algorithmVersion, setAlgorithmVersion] = useState("v3");
+  const [configLoaded, setConfigLoaded] = useState(false);
+  const [trafficConfig, setTrafficConfig] = useState({ reference_speed_kmh: "", minimum_valid_tracks: "3", status_confirm_seconds: "10", free_flow_speed_kmh: "" });
+  const roiCommandIdRef = useRef("");
   const [sourceType, setSourceType] = useState<"csi" | "file">("csi");
   const [videos, setVideos] = useState<string[]>([]);
   const [selectedVideo, setSelectedVideo] = useState<string>("csi");
   const [previewImage, setPreviewImage] = useState<string>("");
   const [isSynthetic, setIsSynthetic] = useState<boolean>(false);
   const [requestId, setRequestId] = useState<string>("");
+  const requestIdRef = useRef("");
+  const previewCommandIdRef = useRef("");
+  const previewPollTimerRef = useRef<number | null>(null);
+  const ignoreTelemetryUntilRef = useRef(0);
   const [drawMode, setDrawMode] = useState<DrawMode>(null);
   const [roiConfig, setRoiConfig] = useState<RoiConfig>({
     detectionRoi: [],
@@ -161,20 +174,70 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
     trafficContext: "signalized",
   });
   const [pipelineRunning, setPipelineRunning] = useState(false);
+  const [pipelineSourceType, setPipelineSourceType] = useState<PipelineSourceType | null>(null);
+  const [pipelineSourceName, setPipelineSourceName] = useState<string>("");
+  const [pendingPipelineAction, setPendingPipelineAction] = useState<"start" | "stop" | null>(null);
   const [displayMode, setDisplayMode] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [activeTab, setActiveTab] = useState<"stream" | "roi">("roi");
 
+  // Telemetry và tóm tắt kết quả khi video hoàn thành
+  const latestTelemetryRef = useRef<{
+    vehicleCount: number;
+    avgSpeed: number;
+    status: string;
+    timestamp: string;
+  } | null>(null);
+  const pipelineSourceTypeRef = useRef<PipelineSourceType | null>(null);
+  const pipelineSourceNameRef = useRef("");
+
+  const [, setLastCompletedSummary] = useState<{
+    sourceType: PipelineSourceType | null;
+    sourceName: string;
+    vehicleCount: number;
+    avgSpeed: number;
+    status: string;
+    completedAt: string;
+  } | null>(null);
+
+  // Bộ đếm Cooldown 2s bảo vệ phần cứng camera CSI & MediaMTX
+  const [cooldownSeconds, setCooldownSeconds] = useState<number>(0);
+
+  useEffect(() => {
+    if (cooldownSeconds <= 0) return;
+    const timer = window.setInterval(() => {
+      setCooldownSeconds((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [cooldownSeconds]);
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
-
-  // Tự động chuyển sang tab Live Stream khi pipeline đang hoạt động
-  useEffect(() => {
-    if (pipelineRunning) {
-      setActiveTab("stream");
+  const updateActivePipelineSource = useCallback((sourceType: unknown, sourceName: unknown) => {
+    const parsedType = parsePipelineSourceType(sourceType);
+    const parsedName = typeof sourceName === "string" ? sourceName : "";
+    setPipelineSourceType(parsedType);
+    setPipelineSourceName(parsedName);
+    pipelineSourceTypeRef.current = parsedType;
+    pipelineSourceNameRef.current = parsedName;
+    if (parsedType === "csi") {
+      setSourceType("csi");
+      setSelectedVideo("csi");
+    } else if (parsedType === "file") {
+      setSourceType("file");
+      if (parsedName) setSelectedVideo(parsedName);
     }
-  }, [pipelineRunning]);
+  }, []);
+
+  // Chỉ Camera CSI mới có Live Stream; video file luôn giữ giao diện video/ROI.
+  useEffect(() => {
+    if (pipelineRunning && pipelineSourceType === "csi") {
+      setActiveTab("stream");
+    } else if (pipelineSourceType === "file") {
+      setActiveTab("roi");
+    }
+  }, [pipelineRunning, pipelineSourceType]);
 
   // ── Khôi phục trạng thái Pipeline khi mở Modal ──────────────────────────────
   useEffect(() => {
@@ -183,8 +246,23 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
       try {
         const res = await axios.get(`${API_BASE}/nodes/${edgeId}`);
         if (!isMounted) return;
+        const current = res.data;
+        if (["v1", "v2", "v3"].includes(current?.algorithm_version)) setAlgorithmVersion(current.algorithm_version);
+        if (current && Object.prototype.hasOwnProperty.call(current, "reference_speed_kmh")) {
+          setTrafficConfig({
+            reference_speed_kmh: current.reference_speed_kmh == null ? "" : String(current.reference_speed_kmh),
+            free_flow_speed_kmh: current.free_flow_speed_kmh == null ? "" : String(current.free_flow_speed_kmh),
+            minimum_valid_tracks: String(current.minimum_valid_tracks ?? 3),
+            status_confirm_seconds: String(current.status_confirm_seconds ?? 10),
+          });
+          setConfigLoaded(true);
+        }
         const isRun = Boolean(res.data?.pipeline_running);
         setPipelineRunning(isRun);
+        updateActivePipelineSource(
+          isRun ? res.data?.pipeline_source_type : null,
+          isRun ? res.data?.pipeline_source_name : ""
+        );
         if (isRun) {
           setStage("pipeline_control");
           setStatusMessage("✅ AI Pipeline đang hoạt động trên Jetson.");
@@ -195,6 +273,10 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
           if (!isMounted) return;
           const isRun = Boolean(statRes.data?.pipeline_running);
           setPipelineRunning(isRun);
+          updateActivePipelineSource(
+            isRun ? statRes.data?.pipeline_source_type : null,
+            isRun ? statRes.data?.pipeline_source_name : ""
+          );
           if (isRun) {
             setStage("pipeline_control");
             setStatusMessage("✅ AI Pipeline đang hoạt động trên Jetson.");
@@ -205,8 +287,11 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
     checkPipelineStatus();
     return () => {
       isMounted = false;
+      if (previewPollTimerRef.current !== null) {
+        window.clearInterval(previewPollTimerRef.current);
+      }
     };
-  }, [edgeId]);
+  }, [edgeId, updateActivePipelineSource]);
 
   // ── Lắng nghe WebSocket để nhận preview frame, command_result, heartbeat, telemetry ──
 
@@ -219,23 +304,60 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
         // Lắng nghe heartbeat để đồng bộ trạng thái pipeline realtime
         if ((msg.type === "heartbeat" || msg.type === "node_registered") && isTargetNode) {
           if (typeof msg.pipeline_running === "boolean") {
-            setPipelineRunning(msg.pipeline_running);
+            // Sau khi người dùng chủ động dừng, bỏ qua heartbeat "running" còn tồn
+            // trong mạng để không tự bật lại giao diện/live stream.
+            if (msg.pipeline_running && Date.now() < ignoreTelemetryUntilRef.current) {
+              return;
+            }
+            setPipelineRunning((prevRunning) => {
+              if (prevRunning && !msg.pipeline_running) {
+                // Pipeline vừa hoàn thành / dừng
+                setLastCompletedSummary({
+                  sourceType: pipelineSourceTypeRef.current,
+                  sourceName: pipelineSourceNameRef.current,
+                  vehicleCount: latestTelemetryRef.current?.vehicleCount ?? 0,
+                  avgSpeed: latestTelemetryRef.current?.avgSpeed ?? 0,
+                  status: latestTelemetryRef.current?.status ?? "FREE",
+                  completedAt: new Date().toLocaleTimeString(),
+                });
+                setCooldownSeconds(2);
+              }
+              return msg.pipeline_running;
+            });
             if (msg.pipeline_running) {
               setStage((prev) => (prev === "idle" ? "pipeline_control" : prev));
-              if (msg.pipeline_running) {
-                setStatusMessage("✅ AI Pipeline đang hoạt động trên Jetson.");
+              setStatusMessage("✅ AI Pipeline đang hoạt động trên Jetson.");
+              if (Object.prototype.hasOwnProperty.call(msg, "pipeline_source_type")) {
+                updateActivePipelineSource(msg.pipeline_source_type, msg.pipeline_source_name);
               }
+            } else {
+              updateActivePipelineSource(null, "");
             }
           }
         }
 
         // Lắng nghe telemetry — nếu nhận được telemetry nghĩa là pipeline đang chạy
         if (msg.type === "telemetry" && isTargetNode) {
+          // Telemetry có thể đến trễ sau lệnh stop. Không để nó mở lại trạng thái chạy.
+          if (Date.now() < ignoreTelemetryUntilRef.current) {
+            return;
+          }
           setPipelineRunning(true);
           setStage((prev) => (prev === "idle" ? "pipeline_control" : prev));
+          const telemetry = {
+            vehicleCount: Number(msg.current_vehicle_count ?? msg.vehicle_count ?? 0),
+            avgSpeed: Number(msg.avg_speed_kmh ?? msg.speed ?? 0),
+            status: msg.traffic_status || "FREE",
+            timestamp: new Date().toLocaleTimeString(),
+          };
+          latestTelemetryRef.current = telemetry;
         }
 
-        if (msg.type === "preview_frame" && isTargetNode) {
+        if (
+          msg.type === "preview_frame" &&
+          isTargetNode &&
+          msg.request_id === requestIdRef.current
+        ) {
           const rawUrl = msg.preview_url || msg.image_data;
           if (rawUrl) {
             // Hỗ trợ cả URL HTTP GET (Fix F3) và Base64 fallback
@@ -257,16 +379,29 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
           }
         }
         if (msg.type === "command_result" && isTargetNode) {
-          if (msg.action === "capture_preview") {
-            if (msg.status === "failed") {
+          if (msg.action === "set_roi_remote" && msg.command_id === roiCommandIdRef.current) {
+            roiCommandIdRef.current = "";
+            if (msg.status === "completed") {
+              setStatusMessage("Jetson đã lưu ROI và thuật toán đã chọn. Dừng rồi Chạy lại pipeline để áp dụng; tùy chọn CLI tường minh có thể ghi đè cấu hình đã lưu.");
+            } else {
+              setErrorMessage("Jetson chưa lưu cấu hình: " + (msg.error || msg.message || msg.status));
+            }
+          }
+          if (msg.action === "capture_preview" && msg.command_id === previewCommandIdRef.current) {
+            if (msg.status !== "completed" && msg.status !== "not_implemented") {
               setErrorMessage("Lỗi chụp preview: " + (msg.error || msg.message || "Không thể chụp ảnh từ Camera"));
               setStatusMessage("");
               setStage("selecting_video");
             }
+            previewCommandIdRef.current = "";
           }
           if (msg.action === "request_status" && msg.status === "completed") {
             const isRun = typeof msg.message === "object" ? Boolean(msg.message?.pipeline_running) : false;
             setPipelineRunning(isRun);
+            updateActivePipelineSource(
+              isRun ? msg.pipeline_source_type || msg.message?.source_type : null,
+              isRun ? msg.pipeline_source_name || msg.message?.source_name || "" : ""
+            );
             if (isRun) {
               setStage("pipeline_control");
               setStatusMessage(`✅ Pipeline đang chạy (PID=${msg.message?.pid || "?"}, uptime=${msg.message?.uptime_sec || 0}s)`);
@@ -275,34 +410,45 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
               setStage((prev) => (prev === "pipeline_control" ? "idle" : prev));
             }
           }
-          if (msg.action === "set_roi_remote") {
-            if (msg.status === "completed") {
-              setErrorMessage("");
-              setStatusMessage("✅ ROI đã được lưu thành công trên Jetson.");
-            } else if (msg.status !== "not_implemented") {
-              setErrorMessage("Lỗi lưu ROI: " + JSON.stringify(msg.message));
-            }
-          }
-          if (msg.action === "start_pipeline") {
+          if (msg.action === "start_pipeline" || msg.action === "start_csi") {
             if (msg.status === "completed") {
               setPipelineRunning(true);
+              updateActivePipelineSource(
+                msg.pipeline_source_type || msg.message?.source_type,
+                msg.pipeline_source_name || msg.message?.source_name || ""
+              );
+              setPendingPipelineAction(null);
               setErrorMessage("");
               setStatusMessage("✅ Pipeline khởi động thành công (PID=" + (msg.message?.pid || "?") + ")");
-            } else if (!pipelineRunning) {
+            } else {
+              setPendingPipelineAction(null);
               setErrorMessage("Lỗi khởi động pipeline: " + JSON.stringify(msg.message));
             }
           }
           if (msg.action === "stop_pipeline") {
-            setPipelineRunning(false);
-            const stopMsg = typeof msg.message === "string" ? msg.message : "✅ Pipeline đã kết thúc/dừng.";
-            setStatusMessage(stopMsg);
-            // Reset stage về idle sau khi dừng thành công để tránh UI loạn
-            setStage("idle");
-          }
-          if (msg.action === "list_videos" && msg.status === "completed") {
-            const vids = Array.isArray(msg.message) ? msg.message : [];
-            setVideos(vids);
-            setStage("selecting_video");
+            setPendingPipelineAction(null);
+            if (msg.status === "completed") {
+              setPipelineRunning((wasRunning) => {
+                if (wasRunning) {
+                  setLastCompletedSummary({
+                    sourceType: pipelineSourceTypeRef.current,
+                    sourceName: pipelineSourceNameRef.current,
+                    vehicleCount: latestTelemetryRef.current?.vehicleCount ?? 0,
+                    avgSpeed: latestTelemetryRef.current?.avgSpeed ?? 0,
+                    status: latestTelemetryRef.current?.status ?? "FREE",
+                    completedAt: new Date().toLocaleTimeString(),
+                  });
+                  setCooldownSeconds(2);
+                }
+                return false;
+              });
+              updateActivePipelineSource(null, "");
+              const stopText = typeof msg.message === "object" ? msg.message?.text : msg.message;
+              setStatusMessage(stopText || "✅ Pipeline đã hoàn thành/dừng.");
+              setStage("idle");
+            } else {
+              setErrorMessage("Lỗi dừng pipeline: " + JSON.stringify(msg.message));
+            }
           }
         }
       } catch (e) {
@@ -311,7 +457,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
     });
 
     return () => unsubscribe();
-  }, [edgeId]);
+  }, [edgeId, updateActivePipelineSource]);
 
 
   // ── Vẽ lại canvas mỗi khi ROI thay đổi ───────────────────────────────────
@@ -367,18 +513,40 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
     });
   };
 
+  const resetSourcePreview = (nextStage: Stage) => {
+    if (previewPollTimerRef.current !== null) {
+      window.clearInterval(previewPollTimerRef.current);
+      previewPollTimerRef.current = null;
+    }
+    requestIdRef.current = "";
+    previewCommandIdRef.current = "";
+    setRequestId("");
+    setPreviewImage("");
+    setIsSynthetic(false);
+    latestTelemetryRef.current = null;
+    setLastCompletedSummary(null);
+    setDrawMode(null);
+    setRoiConfig((prev) => ({ ...prev, detectionRoi: [], analysisRoi: [] }));
+    setStage(nextStage);
+  };
+
   // ── Step 1: Tải danh sách video ─────────────────────────────────────────────
 
   const handleLoadVideos = async () => {
     setStage("loading_videos");
     setErrorMessage("");
+    setStatusMessage("");
     try {
       const res = await axios.get(`${API_BASE}/nodes/${edgeId}/videos`, { timeout: 20000 });
-      setVideos(res.data.videos || []);
+      const loadedVideos = Array.isArray(res.data?.videos) ? res.data.videos : [];
+      setVideos(loadedVideos);
       setStage("selecting_video");
+      if (loadedVideos.length === 0) {
+        setErrorMessage("Jetson không có file video khả dụng.");
+      }
     } catch (e: any) {
-      // Fallback: nếu Jetson offline, gửi qua MQTT và chờ WS
-      setStatusMessage("Đang chờ Jetson phản hồi qua MQTT...");
+      setStage("selecting_video");
+      setErrorMessage("Không thể tải danh sách video: " + (e.response?.data?.detail || e.message));
     }
   };
 
@@ -390,6 +558,15 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
     setErrorMessage("");
     setPreviewImage("");
     setIsSynthetic(false);
+    latestTelemetryRef.current = null;
+    setLastCompletedSummary(null);
+    requestIdRef.current = "";
+    previewCommandIdRef.current = "";
+    setRequestId("");
+    if (previewPollTimerRef.current !== null) {
+      window.clearInterval(previewPollTimerRef.current);
+      previewPollTimerRef.current = null;
+    }
     setStatusMessage(
       sourceType === "csi"
         ? "Đang gửi lệnh yêu cầu Camera CSI chụp khung hình..."
@@ -402,6 +579,11 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
         source: sourceType === "csi" ? "csi" : selectedVideo,
       });
       const reqId = res.data.request_id || "";
+      previewCommandIdRef.current = res.data.command_id || "";
+      if (!reqId) {
+        throw new Error("Backend không trả về mã yêu cầu preview.");
+      }
+      requestIdRef.current = reqId;
       setRequestId(reqId);
       setStatusMessage(
         sourceType === "csi"
@@ -411,17 +593,27 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
 
       // Polling fallback nếu WebSocket bị trễ
       let attempts = 0;
-      const pollTimer = setInterval(async () => {
+      previewPollTimerRef.current = window.setInterval(async () => {
         attempts++;
         if (attempts > 12) {
-          clearInterval(pollTimer);
+          if (previewPollTimerRef.current !== null) {
+            window.clearInterval(previewPollTimerRef.current);
+            previewPollTimerRef.current = null;
+          }
+          if (requestIdRef.current === reqId) {
+            setStage("selecting_video");
+            setErrorMessage("Jetson không trả frame preview trong thời gian chờ.");
+          }
           return;
         }
         try {
           const pollRes = await axios.get(`${API_BASE}/nodes/${edgeId}/preview/${reqId}`);
           const pollUrl = pollRes.data?.preview_url || pollRes.data?.image_data;
-          if (pollUrl) {
-            clearInterval(pollTimer);
+          if (pollUrl && requestIdRef.current === reqId) {
+            if (previewPollTimerRef.current !== null) {
+              window.clearInterval(previewPollTimerRef.current);
+              previewPollTimerRef.current = null;
+            }
             const imgSrc = pollUrl.startsWith("data:")
               ? pollUrl
               : pollUrl.startsWith("http")
@@ -443,6 +635,10 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
         }
       }, 2000);
     } catch (e: any) {
+      if (previewPollTimerRef.current !== null) {
+        window.clearInterval(previewPollTimerRef.current);
+        previewPollTimerRef.current = null;
+      }
       setStage("selecting_video");
       setErrorMessage("Không thể gửi yêu cầu preview: " + (e.response?.data?.detail || e.message));
     }
@@ -452,6 +648,16 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
   // ── Step 3: Lưu ROI ─────────────────────────────────────────────────────────
 
   const handleSaveRoi = async () => {
+    const reference = trafficConfig.reference_speed_kmh.trim() === "" ? null : Number(trafficConfig.reference_speed_kmh);
+    const freeFlow = trafficConfig.free_flow_speed_kmh.trim() === "" ? null : Number(trafficConfig.free_flow_speed_kmh);
+    const tracks = Number(trafficConfig.minimum_valid_tracks);
+    const confirmSeconds = Number(trafficConfig.status_confirm_seconds);
+    if ((reference !== null && (!Number.isFinite(reference) || reference <= 0)) ||
+        (freeFlow !== null && (!Number.isFinite(freeFlow) || freeFlow <= 0)) ||
+        !Number.isInteger(tracks) || tracks < 1 || !Number.isFinite(confirmSeconds) || confirmSeconds < 0 || trafficConfig.status_confirm_seconds.trim() === "") {
+      setErrorMessage("Tốc độ phải dương hoặc để trống; số xe là số nguyên ≥ 1; thời gian xác nhận ≥ 0 giây.");
+      return;
+    }
     if (roiConfig.detectionRoi.length < 3) {
       setErrorMessage("Vùng Detection ROI cần ít nhất 3 điểm.");
       return;
@@ -479,15 +685,21 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
     setErrorMessage("");
 
     try {
-      await axios.post(`${API_BASE}/nodes/${edgeId}/roi`, {
+      const response = await axios.post(`${API_BASE}/nodes/${edgeId}/roi`, {
         detection_roi: roiConfig.detectionRoi.map((p) => [p.x, p.y]),
         analysis_roi: roiConfig.analysisRoi.map((p) => [p.x, p.y]),
         road_width_m: roiConfig.roadWidthM,
         road_length_m: roiConfig.roadLengthM,
         lane_count: roiConfig.laneCount,
         traffic_context: roiConfig.trafficContext,
+        algorithm_version: algorithmVersion,
+        reference_speed_kmh: reference,
+        minimum_valid_tracks: tracks,
+        status_confirm_seconds: confirmSeconds,
+        free_flow_speed_kmh: freeFlow,
       });
-      setStatusMessage("✅ Lệnh lưu ROI đã gửi đến Jetson. Bạn có thể bấm Chạy nhận diện ở Bước 4.");
+      roiCommandIdRef.current = response.data.command_id;
+      setStatusMessage("Đã gửi cấu hình; đang chờ Jetson xác nhận lưu. Sau xác nhận, Dừng rồi Chạy lại pipeline để áp dụng.");
       setStage("pipeline_control");
     } catch (e: any) {
       setStage("preview_ready");
@@ -499,8 +711,16 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
 
   const handleStartPipeline = async () => {
     setErrorMessage("");
+    setLastCompletedSummary(null);
+    setPreviewImage("");
+    setIsSynthetic(false);
+    setDrawMode(null);
+    ignoreTelemetryUntilRef.current = 0;
     const isCsi = sourceType === "csi";
     setStatusMessage(`Đang gửi lệnh khởi động nhận diện (${isCsi ? "Camera CSI" : "Video"})...`);
+    setPipelineSourceType(sourceType);
+    setPipelineSourceName(isCsi ? "Camera CSI" : selectedVideo);
+    setPendingPipelineAction("start");
     try {
       await axios.post(`${API_BASE}/nodes/${edgeId}/pipeline/start`, {
         source_type: sourceType,
@@ -509,12 +729,13 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
         display: displayMode,
       });
       setStatusMessage(
-        `✅ Đã gửi lệnh khởi động! Jetson đang kích hoạt pipeline nhận diện ${isCsi ? "Camera CSI" : "Video"} với cấu hình ROI vừa vẽ...`
+        `Đã gửi lệnh khởi động ${isCsi ? "Camera CSI" : `video ${selectedVideo}`} đến Jetson; đang chờ xác nhận...`
       );
-      setPipelineRunning(true);
-      setActiveTab("stream");
       onRefreshNodes?.();
     } catch (e: any) {
+      setPendingPipelineAction(null);
+      setPipelineSourceType(null);
+      setPipelineSourceName("");
       setErrorMessage("Lỗi khởi động pipeline: " + (e.response?.data?.detail || e.message));
     }
   };
@@ -522,12 +743,20 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
 
   const handleStopPipeline = async () => {
     setErrorMessage("");
-    setStatusMessage("Đang gửi lệnh dừng pipeline...");
+    setStatusMessage("Đang gửi lệnh dừng pipeline; đang giải phóng phần cứng...");
+    setPendingPipelineAction("stop");
+    // Chặn telemetry/heartbeat trễ trong 3 giây và tháo player ngay lập tức.
+    ignoreTelemetryUntilRef.current = Date.now() + 3000;
+    setCooldownSeconds(2); // Kích hoạt 2s cooldown dọn dẹp phần cứng ngay
+    setPipelineRunning(false);
+    setActiveTab("roi");
     try {
       await axios.post(`${API_BASE}/nodes/${edgeId}/pipeline/stop`);
-      setPipelineRunning(false);
       onRefreshNodes?.();
     } catch (e: any) {
+      setPendingPipelineAction(null);
+      ignoreTelemetryUntilRef.current = 0;
+      setCooldownSeconds(0);
       setErrorMessage("Lỗi dừng pipeline: " + (e.response?.data?.detail || e.message));
     }
   };
@@ -540,6 +769,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
   const isLoadingVideos = stage === "loading_videos";
   const isLoadingPreview = stage === "loading_preview";
   const isPipelineStage = stage === "pipeline_control";
+  const displayedSourceType = pipelineRunning ? pipelineSourceType : sourceType;
 
   // ── Khi đang minimize: hiển thị floating chip ──────────────────────────────
   if (isMinimized) {
@@ -626,6 +856,28 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
         <div className="flex flex-1 overflow-hidden">
           {/* Left Panel: Controls */}
           <div className="w-80 flex flex-col gap-4 p-4 bg-slate-50 border-r border-slate-200 overflow-y-auto shrink-0">
+            <TrafficUsageHelp />
+            <fieldset className="space-y-2 rounded-xl border border-slate-200 bg-white p-3">
+              <legend className="text-xs font-bold">Cấu hình thuật toán Jetson</legend>
+              <label className="block text-xs text-slate-600">Phiên bản (so sánh A/B hoặc quay lại)
+                <select value={algorithmVersion} onChange={e => setAlgorithmVersion(e.target.value)} className="mt-1 w-full rounded border border-slate-300 px-2 py-1">
+                  <option value="v3">v3 · SPI tốc độ trung vị</option>
+                  <option value="v2">v2 · Thuật toán trước</option>
+                  <option value="v1">v1 · Thuật toán gốc</option>
+                </select>
+              </label>
+              <p className="text-[11px] text-amber-800">{configLoaded ? "Giá trị lấy từ dữ liệu node gần nhất, chưa phải bản đọc trực tiếp cấu hình trên Jetson. Kiểm tra trước khi lưu." : "Chưa đọc được cấu hình hiện tại. Đây là giá trị khởi tạo; hãy nhập lại cấu hình mong muốn trước khi lưu để tránh ghi đè nhầm."}</p>
+              {([
+                ["reference_speed_kmh", "Tốc độ tham chiếu / giới hạn (km/h)", "0.1", "0.1"],
+                ["minimum_valid_tracks", "Số xe hợp lệ tối thiểu", "1", "1"],
+                ["status_confirm_seconds", "Thời gian xác nhận (giây)", "0", "1"],
+                ["free_flow_speed_kmh", "Tốc độ dòng tự do (tùy chọn, km/h)", "0.1", "0.1"],
+              ] as const).map(([key, label, min, step]) => <label key={key} className="block text-xs text-slate-600">
+                {label}
+                <input type="number" min={min} step={step} value={trafficConfig[key]} onChange={e => setTrafficConfig(prev => ({ ...prev, [key]: e.target.value }))} className="mt-1 w-full rounded border border-slate-300 px-2 py-1" />
+              </label>)}
+              <p className="text-[11px] text-slate-600">Ngưỡng SPI cố định 50/25. Để trống tham chiếu: chưa đủ cấu hình, hiển thị UNKNOWN. Các giá trị trên được gửi cùng nút Lưu cấu hình ROI sau khi vẽ đủ ROI.</p>
+            </fieldset>
 
             {/* Step 1: Chọn nguồn video / camera */}
             <div className="space-y-2 bg-white p-3 rounded-xl border border-slate-200 shadow-xs">
@@ -635,9 +887,13 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                   <span>Bước 1 · Nguồn đầu vào</span>
                 </span>
                 <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
-                  sourceType === "csi" ? "bg-emerald-100 text-emerald-700" : "bg-blue-100 text-blue-700"
+                  displayedSourceType === "csi" ? "bg-emerald-100 text-emerald-700" : "bg-blue-100 text-blue-700"
                 }`}>
-                  {sourceType === "csi" ? "Camera CSI" : "File Video"}
+                  {displayedSourceType === "csi"
+                    ? "Camera CSI"
+                    : displayedSourceType === "file"
+                      ? "File Video"
+                      : "Nguồn đang chạy chưa rõ"}
                 </span>
               </div>
 
@@ -645,12 +901,15 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
               <div className="grid grid-cols-2 p-1 bg-slate-100 rounded-xl gap-1">
                 <button
                   type="button"
+                  disabled={pipelineRunning || pendingPipelineAction !== null || isLoadingPreview || isLoadingVideos}
                   onClick={() => {
                     setSourceType("csi");
                     setSelectedVideo("csi");
+                    setErrorMessage("");
+                    resetSourcePreview("idle");
                   }}
-                  className={`py-1.5 px-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
-                    sourceType === "csi" ? "bg-white text-blue-700 shadow-xs" : "text-slate-600 hover:text-slate-900"
+                  className={`py-1.5 px-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed ${
+                    displayedSourceType === "csi" ? "bg-white text-blue-700 shadow-xs" : "text-slate-600 hover:text-slate-900"
                   }`}
                 >
                   <Camera className="w-3.5 h-3.5" />
@@ -658,12 +917,15 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                 </button>
                 <button
                   type="button"
+                  disabled={pipelineRunning || pendingPipelineAction !== null || isLoadingPreview || isLoadingVideos}
                   onClick={() => {
                     setSourceType("file");
                     setSelectedVideo("");
+                    setErrorMessage("");
+                    resetSourcePreview("selecting_video");
                   }}
-                  className={`py-1.5 px-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
-                    sourceType === "file" ? "bg-white text-blue-700 shadow-xs" : "text-slate-600 hover:text-slate-900"
+                  className={`py-1.5 px-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed ${
+                    displayedSourceType === "file" ? "bg-white text-blue-700 shadow-xs" : "text-slate-600 hover:text-slate-900"
                   }`}
                 >
                   <Video className="w-3.5 h-3.5" />
@@ -671,7 +933,11 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                 </button>
               </div>
 
-              {sourceType === "csi" ? (
+              {pipelineRunning && !pipelineSourceType ? (
+                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
+                  Jetson báo pipeline đang chạy nhưng chưa có thông tin nguồn đầu vào.
+                </div>
+              ) : displayedSourceType === "csi" ? (
                 <div className="p-2.5 rounded-xl bg-blue-50/70 border border-blue-100 text-[11px] text-blue-900 space-y-1">
                   <div className="font-bold flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
@@ -686,7 +952,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                   <button
                     id="btn-load-videos"
                     onClick={handleLoadVideos}
-                    disabled={isLoadingVideos}
+                    disabled={isLoadingVideos || isLoadingPreview || pipelineRunning || pendingPipelineAction !== null}
                     className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold shadow-xs transition"
                   >
                     {isLoadingVideos ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
@@ -697,9 +963,14 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                     <div className="relative">
                       <select
                         id="select-video"
+                        disabled={pipelineRunning || pendingPipelineAction !== null || isLoadingPreview || isLoadingVideos}
                         className="w-full pl-3 pr-8 py-2 text-xs rounded-xl bg-white border border-slate-300 text-slate-800 appearance-none focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 shadow-xs font-medium"
                         value={selectedVideo}
-                        onChange={(e) => setSelectedVideo(e.target.value)}
+                        onChange={(e) => {
+                          setSelectedVideo(e.target.value);
+                          setErrorMessage("");
+                          resetSourcePreview("selecting_video");
+                        }}
                       >
                         <option value="">-- Chọn video --</option>
                         {videos.map((v) => (
@@ -834,7 +1105,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                         <span>🚦 Có đèn tín hiệu</span>
                       </div>
                       <p className="text-[10px] text-slate-500 mt-0.5 leading-tight">
-                        Ân hạn 30s đèn đỏ, không báo kẹt sai
+                        ROI có xe chờ đèn: cần đối chiếu chu kỳ đèn
                       </p>
                     </button>
 
@@ -851,7 +1122,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                         <span>🛣️ Không có đèn</span>
                       </div>
                       <p className="text-[10px] text-slate-500 mt-0.5 leading-tight">
-                        Đoạn thẳng mở, báo dồn ứ sau 15s
+                        Đoạn giữa nút giao, hiệu chuẩn đúng kích thước
                       </p>
                     </button>
                   </div>
@@ -876,6 +1147,16 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                   <Play className="w-3.5 h-3.5 text-emerald-600" />
                   <span>Bước 4 · Pipeline</span>
                 </div>
+                {pipelineRunning && (
+                  <div className="text-[11px] font-semibold text-slate-700">
+                    Nguồn đang chạy: {pipelineSourceType === "csi" ? "Camera CSI" : pipelineSourceType === "file" ? `Video · ${pipelineSourceName || "không rõ tên"}` : "Chưa xác định"}
+                  </div>
+                )}
+                {pendingPipelineAction && (
+                  <div className="text-[11px] font-semibold text-amber-700">
+                    {pendingPipelineAction === "start" ? "Đang chờ Jetson xác nhận lệnh chạy..." : "Đang chờ Jetson xác nhận lệnh dừng..."}
+                  </div>
+                )}
 
                 {/* Toggle display */}
                 <button
@@ -896,22 +1177,28 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                   <button
                     id="btn-start-pipeline"
                     onClick={handleStartPipeline}
-                    disabled={pipelineRunning || (sourceType === "file" && !selectedVideo)}
+                    disabled={pipelineRunning || pendingPipelineAction !== null || (sourceType === "file" && !selectedVideo) || cooldownSeconds > 0}
                     className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white text-xs font-bold shadow-xs transition"
                     title={sourceType === "csi" ? "Khởi động nhận diện CSI với ROI vừa cấu hình" : "Chạy video với ROI vừa cấu hình"}
                   >
                     <Play className="w-4 h-4 fill-current" />
-                    <span>{sourceType === "csi" ? "🚀 Chạy nhận diện CSI" : "Chạy Video"}</span>
+                    <span>
+                      {cooldownSeconds > 0
+                        ? `⏳ Nhả phần cứng (${cooldownSeconds}s)`
+                        : sourceType === "csi"
+                          ? "🚀 Chạy nhận diện CSI"
+                          : "Chạy Video"}
+                    </span>
                   </button>
 
                   <button
                     id="btn-stop-pipeline"
                     onClick={handleStopPipeline}
-                    disabled={!pipelineRunning}
+                    disabled={!pipelineRunning || pendingPipelineAction !== null || cooldownSeconds > 0}
                     className="w-24 flex items-center justify-center gap-1.5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-bold shadow-xs transition"
                   >
                     <Square className="w-4 h-4 fill-current" />
-                    <span>Dừng</span>
+                    <span>{cooldownSeconds > 0 ? "..." : "Dừng"}</span>
                   </button>
                 </div>
 
@@ -949,7 +1236,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
 
           {/* Right Panel: Canvas & Live Stream */}
           <div className="flex-1 flex flex-col bg-slate-950 relative overflow-hidden select-none">
-            {pipelineRunning && (
+            {pipelineRunning && pipelineSourceType === "csi" && (
               <div className="flex items-center justify-between px-4 py-2 bg-slate-900/90 border-b border-slate-800 shrink-0 z-10">
                 <div className="flex items-center gap-1.5 p-0.5 bg-slate-800/80 rounded-lg border border-slate-700/60">
                   <button
@@ -976,24 +1263,19 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                     <span>📐 Vùng ROI Đã Cấu Hình</span>
                   </button>
                 </div>
-                <div className="text-[11px] text-slate-400 font-medium">
-                  {activeTab === "stream" ? "Luồng trực tiếp MediaMTX WebRTC / LL-HLS" : "Khung hình cố định & Tọa độ"}
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded text-[11px] bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 font-medium">
+                    📷 Camera CSI
+                  </span>
+                  <div className="text-[11px] text-slate-400 font-medium hidden sm:block">
+                    {activeTab === "stream" ? "Luồng trực tiếp MediaMTX" : "Khung hình cố định & Tọa độ"}
+                  </div>
                 </div>
               </div>
             )}
 
             <div className="flex-1 flex items-center justify-center relative overflow-hidden">
-              {activeTab === "stream" && pipelineRunning ? (
-                <div className="relative w-full h-full flex flex-col items-center justify-center p-3">
-                  <MediaMTXPlayer edgeId={edgeId} className="w-full h-full" />
-                </div>
-              ) : !previewImage ? (
-                <div className="text-center text-slate-500 space-y-3 p-8">
-                  <Camera className="w-16 h-16 mx-auto text-slate-600 stroke-[1.2]" />
-                  <p className="text-sm font-semibold text-slate-300">Chưa có khung hình</p>
-                  <p className="text-xs text-slate-400">Chọn video hoặc Camera CSI ở cột bên trái và bấm "Lấy khung hình"</p>
-                </div>
-              ) : (
+              {previewImage ? (
                 <div className="relative w-full h-full flex items-center justify-center p-3">
                   {isSynthetic && (
                     <div className="absolute top-4 left-4 right-4 z-20 flex items-center gap-2 p-3 rounded-xl bg-amber-500/95 border border-amber-400 text-amber-950 font-bold text-xs shadow-lg backdrop-blur-md">
@@ -1001,14 +1283,7 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                       <span>⚠️ CẢNH BÁO: Khung hình mô phỏng (Synthetic Canvas). Camera phần cứng đang bị ngắt kết nối hoặc không phản hồi! Vui lòng kiểm tra camera trước khi vẽ ROI thực tế.</span>
                     </div>
                   )}
-                  {/* Hidden image dùng để vẽ lên canvas */}
-                  <img
-                    ref={imgRef}
-                    src={previewImage}
-                    onLoad={renderCanvas}
-                    className="hidden"
-                    alt=""
-                  />
+                  <img ref={imgRef} src={previewImage} onLoad={renderCanvas} className="hidden" alt="" />
                   <canvas
                     ref={canvasRef}
                     onClick={handleCanvasClick}
@@ -1022,6 +1297,16 @@ export const RemoteControlModal: React.FC<RemoteControlModalProps> = ({
                       Đang vẽ {drawMode.toUpperCase()} ROI · Chuột trái: thêm điểm · Chuột phải: xóa
                     </div>
                   )}
+                </div>
+              ) : activeTab === "stream" && pipelineRunning && pipelineSourceType === "csi" && pendingPipelineAction !== "stop" ? (
+                <div className="relative w-full h-full flex flex-col items-center justify-center p-3">
+                  <MediaMTXPlayer edgeId={edgeId} className="w-full h-full" />
+                </div>
+              ) : (
+                <div className="text-center text-slate-500 space-y-3 p-8">
+                  <Camera className="w-16 h-16 mx-auto text-slate-600 stroke-[1.2]" />
+                  <p className="text-sm font-semibold text-slate-300">Chưa có khung hình</p>
+                  <p className="text-xs text-slate-400">Chọn video hoặc Camera CSI ở cột bên trái và bấm "Lấy khung hình"</p>
                 </div>
               )}
             </div>

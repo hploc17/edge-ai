@@ -160,6 +160,8 @@ class MQTTService:
                                 "edge_id": target_id,
                                 "status": "online",
                                 "pipeline_running": True,
+                                "pipeline_source_type": approved_node.get("pipeline_source_type"),
+                                "pipeline_source_name": approved_node.get("pipeline_source_name"),
                                 "coordinates": [float(approved_node.get("longitude", 106.65)), float(approved_node.get("latitude", 10.84))],
                                 "last_seen": approved_node.get("last_seen", ""),
                                 "data_status": approved_node.get("data_status", "live"),
@@ -382,7 +384,18 @@ class MQTTService:
                 if action in ("start_pipeline", "start_csi"):
                     if status == "completed":
                         pid = msg_val.get("pid") if isinstance(msg_val, dict) else None
-                        store.update_pipeline_status(effective_edge_id, running=True, pid=pid)
+                        source_type = msg_val.get("source_type") if isinstance(msg_val, dict) else None
+                        source_name = msg_val.get("source_name") if isinstance(msg_val, dict) else None
+                        if action == "start_csi":
+                            source_type = "csi"
+                            source_name = source_name or "Camera CSI"
+                        store.update_pipeline_status(
+                            effective_edge_id,
+                            running=True,
+                            pid=pid,
+                            source_type=source_type,
+                            source_name=source_name,
+                        )
                         node = store.nodes.get(effective_edge_id)
                         if node:
                             node["status"] = "online"
@@ -391,11 +404,13 @@ class MQTTService:
                                 "edge_id": effective_edge_id,
                                 "status": "online",
                                 "pipeline_running": True,
+                                "pipeline_source_type": node.get("pipeline_source_type"),
+                                "pipeline_source_name": node.get("pipeline_source_name"),
                                 "coordinates": [float(node.get("longitude", 106.65)), float(node.get("latitude", 10.84))],
                                 "last_seen": node.get("last_seen", ""),
                                 "data_status": node.get("data_status", "live"),
                             })
-                elif action in ("stop_pipeline", "restart_analytics"):
+                elif action in ("stop_pipeline", "restart_analytics") and status == "completed":
                     store.update_pipeline_status(effective_edge_id, running=False)
                     node = store.nodes.get(effective_edge_id)
                     if node:
@@ -404,6 +419,8 @@ class MQTTService:
                             "edge_id": effective_edge_id,
                             "status": node.get("status", "online"),
                             "pipeline_running": False,
+                            "pipeline_source_type": None,
+                            "pipeline_source_name": None,
                             "coordinates": [float(node.get("longitude", 106.65)), float(node.get("latitude", 10.84))],
                             "last_seen": node.get("last_seen", ""),
                             "data_status": "idle",
@@ -412,7 +429,15 @@ class MQTTService:
                     if isinstance(msg_val, dict):
                         is_running = msg_val.get("pipeline_running", False)
                         pid = msg_val.get("pid")
-                        store.update_pipeline_status(effective_edge_id, running=is_running, pid=pid)
+                        source_type = msg_val.get("source_type")
+                        source_name = msg_val.get("source_name")
+                        store.update_pipeline_status(
+                            effective_edge_id,
+                            running=is_running,
+                            pid=pid,
+                            source_type=source_type,
+                            source_name=source_name,
+                        )
 
                 self._broadcast_async({
                     "type": "command_result",
@@ -421,6 +446,16 @@ class MQTTService:
                     "action": payload.get("action", ""),
                     "status": payload.get("status", ""),
                     "message": payload.get("message", ""),
+                    "pipeline_source_type": (
+                        msg_val.get("source_type")
+                        if action in ("start_pipeline", "start_csi", "request_status") and isinstance(msg_val, dict)
+                        else None
+                    ),
+                    "pipeline_source_name": (
+                        msg_val.get("source_name")
+                        if action in ("start_pipeline", "start_csi", "request_status") and isinstance(msg_val, dict)
+                        else None
+                    ),
                     "timestamp": payload.get("timestamp", ""),
                 })
 
@@ -600,5 +635,4 @@ _curr_mod = sys.modules.get(__name__)
 if _curr_mod:
     sys.modules["services.mqtt_service"] = _curr_mod
     sys.modules["webgis.backend.services.mqtt_service"] = _curr_mod
-
 

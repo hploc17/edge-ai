@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from "react";
 import * as maplibregl from "maplibre-gl";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import type { GeoJSONFeatureCollection } from "../../types/gis";
+import { getTrafficStatus, TRAFFIC_STATUS_COLORS } from "../../lib/trafficStatus";
 
 maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
@@ -78,12 +79,12 @@ const BASEMAP_STYLES: Record<string, any> = {
   light: {
     version: 8,
     sources: {
-      "carto-voyager": {
+      "carto-positron": {
         type: "raster",
         tiles: [
-          "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
-          "https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png",
-          "https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
+          "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+          "https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+          "https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
         ],
         tileSize: 256,
         attribution: "© CARTO, © OpenStreetMap"
@@ -91,9 +92,9 @@ const BASEMAP_STYLES: Record<string, any> = {
     },
     layers: [
       {
-        id: "carto-voyager-layer",
+        id: "carto-positron-layer",
         type: "raster",
-        source: "carto-voyager",
+        source: "carto-positron",
         minzoom: 0,
         maxzoom: 19
       }
@@ -158,7 +159,7 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
   selectedNodeId,
   selectNodeTrigger,
   onSelectNode,
-  basemap = "google",
+  basemap = "streets",
   layersConfig,
   isPickingLocation = false,
   onLocationPicked
@@ -248,24 +249,13 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
           paint: {
             // MapLibre requires ["rgba", r, g, b, a] in interpolate expressions
             "line-color": [
-              "interpolate", ["linear"], ["coalesce", ["get", "congestion_score"], 0],
-              0,   ["rgba", 16, 185, 129, 0],
-              25,  ["rgba", 16, 185, 129, 0],
-              40,  ["rgba", 245, 158, 11, 0.45],
-              65,  ["rgba", 239, 68, 68, 0.8],
-              85,  ["rgba", 220, 38, 38, 0.95],
-              100, ["rgba", 127, 29, 29, 1.0]
+              "match", ["get", "traffic_status"], "SLOW", TRAFFIC_STATUS_COLORS.slow,
+              "CONGESTED", TRAFFIC_STATUS_COLORS.congested, TRAFFIC_STATUS_COLORS.stale
             ],
             "line-width": getRoadWidth(2.4) as any,
             "line-blur": 10,
             "line-opacity": [
-              "interpolate", ["linear"], ["coalesce", ["get", "congestion_score"], 0],
-              0,   0.0,
-              25,  0.0,
-              40,  0.5,
-              65,  0.85,
-              85,  0.95,
-              100, 1.0
+              "match", ["get", "traffic_status"], "SLOW", 0.5, "CONGESTED", 0.85, 0
             ]
           }
         });
@@ -284,22 +274,13 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
           layout: { "line-join": "round", "line-cap": "round", "visibility": heatVis },
           paint: {
             "line-color": [
-              "interpolate", ["linear"], ["coalesce", ["get", "congestion_score"], 0],
-              0,   ["rgba", 16, 185, 129, 0],
-              30,  ["rgba", 245, 158, 11, 0.35],
-              55,  ["rgba", 249, 115, 22, 0.75],
-              75,  ["rgba", 239, 68, 68, 0.92],
-              100, ["rgba", 185, 28, 28, 1.0]
+              "match", ["get", "traffic_status"], "SLOW", TRAFFIC_STATUS_COLORS.slow,
+              "CONGESTED", TRAFFIC_STATUS_COLORS.congested, TRAFFIC_STATUS_COLORS.stale
             ],
             "line-width": getRoadWidth(1.45) as any,
             "line-blur": 4,
             "line-opacity": [
-              "interpolate", ["linear"], ["coalesce", ["get", "congestion_score"], 0],
-              0,   0.0,
-              25,  0.0,
-              40,  0.55,
-              70,  0.9,
-              100, 1.0
+              "match", ["get", "traffic_status"], "SLOW", 0.55, "CONGESTED", 0.9, 0
             ]
           }
         });
@@ -317,12 +298,9 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
           source: "traffic-segments",
           layout: { "line-join": "round", "line-cap": "round", "visibility": segVis },
           paint: {
-            "line-color": [
-              "case",
-              [">=", ["coalesce", ["get", "congestion_score"], 0], 65],
-              ["to-color", "#ffe4e6"],
-              ["to-color", "#ffffff"]
-            ],
+            "line-color": ["match", ["get", "traffic_status"],
+              "FREE", "#ffffff", "SLOW", "#fef3c7", "CONGESTED", "#fee2e2",
+              "STALE", "#e2e8f0", "UNKNOWN", "#e2e8f0", "#e2e8f0"],
             "line-width": getRoadWidth(1.08) as any,
             "line-opacity": 0.95
           }
@@ -341,16 +319,12 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
           source: "traffic-segments",
           layout: { "line-join": "round", "line-cap": "round", "visibility": segVis },
           paint: {
-            "line-color": [
-              "interpolate", ["linear"], ["coalesce", ["get", "congestion_score"], 0],
-              0,   ["to-color", "#10b981"],
-              25,  ["to-color", "#22c55e"],
-              45,  ["to-color", "#eab308"],
-              60,  ["to-color", "#f97316"],
-              75,  ["to-color", "#ef4444"],
-              90,  ["to-color", "#dc2626"],
-              100, ["to-color", "#7f1d1d"]
-            ],
+            "line-color": ["match", ["get", "traffic_status"],
+              "FREE", TRAFFIC_STATUS_COLORS.free,
+              "SLOW", TRAFFIC_STATUS_COLORS.slow,
+              "CONGESTED", TRAFFIC_STATUS_COLORS.congested,
+              "STALE", TRAFFIC_STATUS_COLORS.stale,
+              "UNKNOWN", TRAFFIC_STATUS_COLORS.stale, TRAFFIC_STATUS_COLORS.stale],
             "line-width": getRoadWidth(0.96) as any,
             "line-opacity": 0.95
           }
@@ -426,7 +400,7 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
 
     const map = new maplibregl.Map({
       container: mapContainer.current,
-      style: BASEMAP_STYLES[basemap] || BASEMAP_STYLES.google,
+      style: BASEMAP_STYLES[basemap] || BASEMAP_STYLES.streets,
       center: defaultCenter,
       zoom: defaultZoom,
       pitch: 0,
@@ -458,8 +432,9 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
         map.on("click", "traffic-segments-core", (e) => {
           if (isPickingLocationRef.current || !e.features || !e.features[0]) return;
           const p = e.features[0].properties as any;
-          const statusText = p.traffic_status === "CONGESTED" ? "ÙN TẮC" : (p.traffic_status === "SLOW" ? "ĐÔNG XE" : (p.traffic_status === "STALE" ? "MẤT DỮ LIỆU" : "THÔNG THOÁNG"));
-          const badgeColor = p.traffic_status === "STALE" ? "#64748b" : (p.traffic_color || "#10b981");
+          const statusText = p.traffic_status === "CONGESTED" ? "ÙN TẮC CỤC BỘ" : (p.traffic_status === "SLOW" ? "CHẬM" : (p.traffic_status === "STALE" ? "MẤT DỮ LIỆU" : (p.traffic_status === "UNKNOWN" ? "CHƯA ĐỦ DỮ LIỆU" : "THÔNG THOÁNG")));
+          const badgeColor = getTrafficStatus(p.traffic_status, p.congestion_score, undefined, Date.now(), p.algorithm_version).color;
+          const displayScore = p.traffic_status === "UNKNOWN" || p.traffic_status === "STALE" ? null : (p.algorithm_version === "v3" ? p.speed_reduction_index : p.congestion_score);
           
           // Close existing popup if any
           if (activePopupRef.current) {
@@ -479,11 +454,11 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
                 </div>
                 <div style="font-size: 11px; line-height: 1.6; color: #334155; background: #f8fafc; padding: 8px; border-radius: 8px; border: 1px solid #e2e8f0;">
                   <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
-                    <span style="color: #64748b;">🔥 Độ nhiệt kẹt xe:</span>
-                    <b style="color: ${p.congestion_score >= 65 ? '#ef4444' : p.congestion_score >= 35 ? '#f59e0b' : '#10b981'}; font-family: monospace;">${p.congestion_score || 0} / 100</b>
+                    <span style="color: #64748b;">${p.algorithm_version === "v3" ? "Điểm ùn tắc (100 − SPI):" : "Congestion score:"}</span>
+                    <b style="color: ${badgeColor}; font-family: monospace;">${displayScore ?? "--"} / 100</b>
                   </div>
                   <div style="width: 100%; height: 5px; background: #e2e8f0; border-radius: 999px; overflow: hidden; margin-bottom: 6px;">
-                    <div style="height: 100%; width: ${Math.min(100, Math.max(5, p.congestion_score || 0))}%; background: ${p.congestion_score >= 65 ? 'linear-gradient(90deg, #f97316, #ef4444)' : p.congestion_score >= 35 ? '#f59e0b' : '#10b981'}; border-radius: 999px;"></div>
+                    <div style="height: 100%; width: ${Math.min(100, Math.max(0, displayScore ?? 0))}%; background: ${badgeColor}; border-radius: 999px;"></div>
                   </div>
                   <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
                     <span style="color: #64748b;">📏 Chiều dài vùng nhiệt:</span>
@@ -541,7 +516,7 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
     prevBasemapRef.current = basemap;
 
     const map = mapRef.current;
-    const newStyle = BASEMAP_STYLES[basemap] || BASEMAP_STYLES.google;
+    const newStyle = BASEMAP_STYLES[basemap] || BASEMAP_STYLES.streets;
 
     map.setStyle(newStyle);
 
@@ -674,6 +649,7 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
       const coords = feature.geometry.coordinates as [number, number];
       const props = feature.properties;
       const edgeId = props.edge_id;
+      const markerColor = getTrafficStatus(props.traffic_status, props.congestion_score, props.last_telemetry_at || props.last_seen, Date.now(), props.algorithm_version).color;
       currentEdgeIds.add(edgeId);
 
       const isSelected = selectedNodeId === edgeId;
@@ -688,7 +664,7 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
 
         existingEntry.element.className = isSelected ? "pulsing-marker selected-node-marker" : "pulsing-marker";
         existingEntry.element.style.zIndex = isSelected ? "50" : "10";
-        existingEntry.element.style.setProperty("--marker-glow-color", props.marker_color);
+        existingEntry.element.style.setProperty("--marker-glow-color", markerColor);
 
         const isAiRunning = Boolean(
           props.pipeline_running ||
@@ -697,8 +673,8 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
         );
         existingEntry.element.dataset.aiRunning = isAiRunning ? "true" : "false";
 
-        existingEntry.ring.style.backgroundColor = props.marker_color;
-        existingEntry.core.style.backgroundColor = props.marker_color;
+        existingEntry.ring.style.backgroundColor = markerColor;
+        existingEntry.core.style.backgroundColor = markerColor;
 
         if (isSelected) {
           existingEntry.core.style.boxShadow = `0 0 0 3px rgba(255, 255, 255, 0.9), 0 0 24px 8px ${props.marker_color}`;
@@ -714,14 +690,14 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
             const badge = document.createElement("div");
             badge.className = "node-floating-badge";
             badge.innerHTML = `
-              <span class="node-badge-dot" style="background-color: ${props.marker_color};"></span>
+              <span class="node-badge-dot" style="background-color: ${markerColor};"></span>
               <span class="node-badge-text">${props.name || props.edge_id}</span>
             `;
             existingEntry.element.appendChild(badge);
             existingEntry.badge = badge;
           } else {
             const dot = existingEntry.badge.querySelector(".node-badge-dot") as HTMLElement;
-            if (dot) dot.style.backgroundColor = props.marker_color;
+            if (dot) dot.style.backgroundColor = markerColor;
             const text = existingEntry.badge.querySelector(".node-badge-text") as HTMLElement;
             if (text) text.textContent = props.name || props.edge_id;
           }
@@ -738,8 +714,8 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
             cone.style.transform = `rotate(${props.heading}deg)`;
             cone.innerHTML = `
               <svg viewBox="0 0 100 100" width="68" height="68">
-                <polygon points="50,10 85,90 15,90" fill="${props.marker_color}" opacity="0.35" />
-                <line x1="50" y1="50" x2="50" y2="10" stroke="${props.marker_color}" stroke-width="3" stroke-dasharray="3,3" />
+                <polygon points="50,10 85,90 15,90" fill="${markerColor}" opacity="0.35" />
+                <line x1="50" y1="50" x2="50" y2="10" stroke="${markerColor}" stroke-width="3" stroke-dasharray="3,3" />
               </svg>
             `;
             existingEntry.element.appendChild(cone);
@@ -747,9 +723,9 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
           } else {
             existingEntry.cone.style.transform = `rotate(${props.heading}deg)`;
             const poly = existingEntry.cone.querySelector("polygon");
-            if (poly) poly.setAttribute("fill", props.marker_color);
+            if (poly) poly.setAttribute("fill", markerColor);
             const line = existingEntry.cone.querySelector("line");
-            if (line) line.setAttribute("stroke", props.marker_color);
+            if (line) line.setAttribute("stroke", markerColor);
           }
         } else if (existingEntry.cone) {
           existingEntry.cone.remove();
@@ -761,15 +737,15 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
         const el = document.createElement("div");
         el.className = isSelected ? "pulsing-marker selected-node-marker" : "pulsing-marker";
         el.style.zIndex = isSelected ? "50" : "10";
-        el.style.setProperty("--marker-glow-color", props.marker_color);
+        el.style.setProperty("--marker-glow-color", markerColor);
 
         const ring = document.createElement("div");
         ring.className = "pulsing-marker-ring";
-        ring.style.backgroundColor = props.marker_color;
+        ring.style.backgroundColor = markerColor;
 
         const core = document.createElement("div");
         core.className = "pulsing-marker-core";
-        core.style.backgroundColor = props.marker_color;
+        core.style.backgroundColor = markerColor;
         if (isSelected) {
           core.style.boxShadow = `0 0 0 3px rgba(255, 255, 255, 0.9), 0 0 24px 8px ${props.marker_color}`;
           core.style.transform = "scale(1.55)";
@@ -783,7 +759,7 @@ export const WebGISMap: React.FC<WebGISMapProps> = ({
           badge = document.createElement("div");
           badge.className = "node-floating-badge";
           badge.innerHTML = `
-            <span class="node-badge-dot" style="background-color: ${props.marker_color};"></span>
+            <span class="node-badge-dot" style="background-color: ${markerColor};"></span>
             <span class="node-badge-text">${props.name || props.edge_id}</span>
           `;
           el.appendChild(badge);

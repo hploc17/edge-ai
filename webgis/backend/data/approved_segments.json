@@ -20,5 +20,48 @@
   "segment-001": {
     "segment_id": "segment-001",
     "name": "Đoạn 01"
+  },
+  "seg-virtual-pending-01": {
+    "segment_id": "seg-virtual-pending-01",
+    "road_name": "Phố Trần Nguyên Hãn",
+    "lane_count": 2,
+    "road_length_m": 140.0,
+    "road_width_m": 8.0,
+    "speed_limit_kmh": 50.0,
+    "coordinates": [
+      [
+        105.8552949,
+        21.0289376
+      ],
+      [
+        105.8539536,
+        21.0288166
+      ]
+    ],
+    "congestion_score": 0,
+    "traffic_status": "FREE",
+    "traffic_color": "#10B981",
+    "avg_speed_kmh": 0.0,
+    "current_vehicle_count": 0,
+    "density_veh_per_km_lane": 0.0,
+    "updated_at": "2026-11-07T11:56:53.494574"
+  },
+  "seg-edge-110": {
+    "segment_id": "seg-edge-110",
+    "road_name": "Lê Đức Thọ",
+    "lane_count": 2,
+    "road_length_m": 85.0,
+    "road_width_m": 8.0,
+    "speed_limit_kmh": 60.0,
+    "coordinates": [
+      [
+        106.6599107,
+        10.852806
+      ],
+      [
+        106.6606113,
+        10.8524661
+      ]
+    ]
   }
 }

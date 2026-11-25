@@ -58,6 +58,9 @@ LOCAL_ROI_CONFIG = os.path.join(CONFIGS_DIR, 'roi_traffic_nano.json')
 # Timeout cho graceful shutdown (giây)
 GRACEFUL_STOP_TIMEOUT_SEC = 5.0
 SIGTERM_TIMEOUT_SEC = 2.0
+# Thời gian chờ sau khi pipeline đã thoát để nvargus/MediaMTX/GStreamer
+# giải phóng hoàn toàn tài nguyên trước khi chuyển sang nguồn khác.
+PIPELINE_SWITCH_COOLDOWN_SEC = 2.0
 
 # IPC: file flag để báo cho pipeline worker cần chụp snapshot / preview (Fix V3)
 SNAPSHOT_TRIGGER_FILE = os.path.join(SCRIPT_DIR, '.snapshot_trigger')
@@ -211,6 +214,22 @@ def _stop_external_pipelines(agent_state, timeout_sec=None):
     return len(pids)
 
 
+def _find_latest_benchmark_dir(root_dir):
+    """Tìm thư mục kết quả đo hiệu năng mới nhất trong bench_results/."""
+    bench_dir = os.path.join(root_dir, 'bench_results')
+    if not os.path.isdir(bench_dir):
+        return None
+    try:
+        entries = [os.path.join(bench_dir, d) for d in os.listdir(bench_dir)]
+        subdirs = [d for d in entries if os.path.isdir(d)]
+        if not subdirs:
+            return None
+        subdirs.sort(key=os.path.getmtime, reverse=True)
+        return subdirs[0]
+    except Exception:
+        return None
+
+
 # ── Giải phóng tài nguyên VRAM an toàn ────────────────────────────────────────
 
 def graceful_stop_pipeline(process):
@@ -237,6 +256,7 @@ def graceful_stop_pipeline(process):
     try:
         process.wait(timeout=GRACEFUL_STOP_TIMEOUT_SEC)
         _log('Pipeline PID=%d exited cleanly after SIGINT.' % pid)
+        time.sleep(PIPELINE_SWITCH_COOLDOWN_SEC)  # Cooldown an toàn cho sensor camera CSI và nvargus
         return
     except subprocess.TimeoutExpired:
         pass
@@ -251,6 +271,7 @@ def graceful_stop_pipeline(process):
     try:
         process.wait(timeout=SIGTERM_TIMEOUT_SEC)
         _log('Pipeline PID=%d exited after SIGTERM.' % pid)
+        time.sleep(PIPELINE_SWITCH_COOLDOWN_SEC)
         return
     except subprocess.TimeoutExpired:
         pass
@@ -263,6 +284,7 @@ def graceful_stop_pipeline(process):
     except (OSError, ProcessLookupError):
         pass
     _log('Pipeline PID=%d killed.' % pid)
+    time.sleep(PIPELINE_SWITCH_COOLDOWN_SEC)
 
 
 # ── Kiểm tra tên video hợp lệ (phòng path traversal) ─────────────────────────
@@ -449,6 +471,26 @@ def make_set_roi_remote_handler():
         road_length_m = float(params.get('road_length_m', 20.0))
         lane_count = int(params.get('lane_count', 2))
         traffic_context = str(params.get('traffic_context', 'signalized')).lower().strip()
+        import math
+        algorithm_version = params.get('algorithm_version', 'v3')
+        if algorithm_version not in ('v1', 'v2', 'v3'):
+            raise ValueError('algorithm_version must be v1, v2, or v3')
+        speeds = {}
+        for key in ('reference_speed_kmh', 'free_flow_speed_kmh'):
+            value = params.get(key)
+            if value is not None:
+                if isinstance(value, bool):
+                    raise ValueError('%s must be positive or null' % key)
+                value = float(value)
+                if not math.isfinite(value) or value <= 0:
+                    raise ValueError('%s must be finite and positive or null' % key)
+            speeds[key] = value
+        minimum_valid_tracks = params.get('minimum_valid_tracks', 3)
+        if type(minimum_valid_tracks) is not int or minimum_valid_tracks < 1:
+            raise ValueError('minimum_valid_tracks must be an integer >= 1')
+        confirm_seconds = float(params.get('status_confirm_seconds', 10.0))
+        if not math.isfinite(confirm_seconds) or confirm_seconds < 0:
+            raise ValueError('status_confirm_seconds must be finite and >= 0')
         if traffic_context not in ('signalized', 'midblock'):
             traffic_context = 'signalized'
 
@@ -484,14 +526,25 @@ def make_set_roi_remote_handler():
             'road_length_m': road_length_m,
             'lane_count': lane_count,
             'traffic_context': traffic_context,
+            'algorithm_version': algorithm_version,
+            'reference_speed_kmh': speeds['reference_speed_kmh'],
+            'free_flow_speed_kmh': speeds['free_flow_speed_kmh'],
+            'minimum_valid_tracks': minimum_valid_tracks,
+            'status_confirm_seconds': confirm_seconds,
+            'free_speed_ratio_min_percent': 50.0,
+            'congested_speed_ratio_max_percent': 25.0,
         }
 
         os.makedirs(CONFIGS_DIR, exist_ok=True)
-        with open(REMOTE_ROI_CONFIG, 'w') as f:
+        temporary_path = REMOTE_ROI_CONFIG + '.tmp'
+        with open(temporary_path, 'w') as f:
             json.dump(config, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary_path, REMOTE_ROI_CONFIG)
 
         _log('set_roi_remote: saved to %s' % REMOTE_ROI_CONFIG)
-        return 'Remote ROI saved successfully'
+        return 'Remote ROI/config persisted successfully; stop then start pipeline with roi_config=remote to apply. Explicit CLI overrides saved config; environment is fallback only.'
 
     return handler
 
@@ -559,6 +612,8 @@ def make_start_pipeline_handler(agent_state):
                         'state': 'running',
                         'roi_config': roi_config_type,
                         'display': display,
+                        'source_type': source_type,
+                        'source_name': os.path.basename(source) if source_type == 'file' else 'Camera CSI',
                         'message': 'Pipeline is already running with identical config'
                     }
 
@@ -587,6 +642,31 @@ def make_start_pipeline_handler(agent_state):
             if not display:
                 cmd.append('--no-display')
 
+            # Tự động kích hoạt đo hiệu năng nếu bật AUTO_MEASURE hoặc nhận từ tham số WebGIS
+            auto_measure = bool(params.get('measure', False)) or (
+                os.getenv('AUTO_MEASURE', os.getenv('MEASURE_PERF', '1')).strip().lower() in ('1', 'true', 'yes')
+            )
+            if auto_measure:
+                phase_name = params.get('measure_phase')
+                if not phase_name:
+                    if source_type == 'file' and source:
+                        base = os.path.basename(str(source).replace('\\', '/'))
+                        phase_name = os.path.splitext(base)[0]
+                    elif source_type == 'csi':
+                        phase_name = 'camera_csi'
+                    else:
+                        phase_name = 'pipeline_run'
+                    algo = params.get('algo_version') or os.getenv('TRAFFIC_ALGORITHM_VERSION')
+                    if algo:
+                        phase_name = '%s_%s' % (phase_name, algo)
+                cmd.extend(['--measure', '--measure-phase', phase_name])
+                if params.get('measure_duration'):
+                    cmd.extend(['--measure-duration', str(int(params['measure_duration']))])
+                if params.get('measure_warmup'):
+                    cmd.extend(['--measure-warmup', str(int(params['measure_warmup']))])
+            else:
+                cmd.append('--no-measure')
+
             _log('start_pipeline: %s' % ' '.join(cmd))
 
             env = os.environ.copy()
@@ -611,7 +691,14 @@ def make_start_pipeline_handler(agent_state):
             agent_state['last_start_data'] = data
             _log('start_pipeline: started PID=%d (logging to %s)' % (proc.pid, log_file_path))
 
-            return {'pid': proc.pid, 'state': 'running', 'roi_config': roi_config_type, 'display': display}
+            return {
+                'pid': proc.pid,
+                'state': 'running',
+                'roi_config': roi_config_type,
+                'display': display,
+                'source_type': source_type,
+                'source_name': os.path.basename(source) if source_type == 'file' else 'Camera CSI',
+            }
 
     return handler
 
@@ -895,11 +982,22 @@ def make_capture_snapshot_handler(agent_state, backend_url, edge_id, edge_token)
 def make_request_status_handler(agent_state):
     """Báo cáo trạng thái pipeline hiện tại (hỗ trợ cả tiến trình con và tiến trình chạy ngoài trên OS)."""
     def handler(data=None):
+        current_cmd = agent_state.get('pipeline_current_cmd')
+        source = current_cmd[0] if current_cmd else None
+        source_type = ('csi' if source == 'csi' else 'file') if source else None
+        source_name = (os.path.basename(source) if source_type == 'file' else 'Camera CSI') if source_type else None
+
         # 1. Kiểm tra tiến trình con được quản lý bởi agent
         proc = agent_state.get('pipeline_process')
         if proc is not None and proc.poll() is None:
             uptime = time.time() - agent_state.get('pipeline_started_at', time.time())
-            return {'pipeline_running': True, 'pid': proc.pid, 'uptime_sec': int(uptime)}
+            return {
+                'pipeline_running': True,
+                'pid': proc.pid,
+                'uptime_sec': int(uptime),
+                'source_type': source_type,
+                'source_name': source_name,
+            }
 
         # 2. Quét tiến trình main.py trên OS (trong trường hợp người dùng chạy từ terminal hoặc systemd)
         try:
@@ -910,7 +1008,13 @@ def make_request_status_handler(agent_state):
                     cmd_str = ' '.join(cmdline)
                     if ('main.py' in cmd_str or 'main3.py' in cmd_str) and 'jetson_agent.py' not in cmd_str:
                         uptime = time.time() - p.info.get('create_time', time.time())
-                        return {'pipeline_running': True, 'pid': p.info['pid'], 'uptime_sec': int(max(0, uptime))}
+                        return {
+                            'pipeline_running': True,
+                            'pid': p.info['pid'],
+                            'uptime_sec': int(max(0, uptime)),
+                            'source_type': source_type,
+                            'source_name': source_name,
+                        }
                 except Exception:
                     pass
         except Exception:
@@ -921,7 +1025,13 @@ def make_request_status_handler(agent_state):
             out = subprocess.check_output(['pgrep', '-f', 'python3.*main.py'], stderr=subprocess.DEVNULL)
             pids = [int(x) for x in out.decode().strip().split() if x.isdigit()]
             if pids:
-                return {'pipeline_running': True, 'pid': pids[0], 'uptime_sec': 30}
+                return {
+                    'pipeline_running': True,
+                    'pid': pids[0],
+                    'uptime_sec': 30,
+                    'source_type': source_type,
+                    'source_name': source_name,
+                }
         except Exception:
             pass
 
@@ -1269,18 +1379,38 @@ def run_agent():
                             pass
                         continue
 
-                    # 2. File video chạy hết tự nhiên (EOS: retcode == 0) -> Không restart, báo Web
-                    if retcode == 0 and source_type == 'file':
+                    # 2. File video chạy hết tự nhiên (EOS) -> Không restart, báo Web hoàn thành.
+                    # Chỉ mã thoát 0 mới được xem là hoàn thành; không dùng thời gian chạy
+                    # để suy đoán vì pipeline có thể crash sau vài giây.
+                    if source_type == 'file' and retcode == 0:
                         _log('Video playback finished normally (EOS).')
                         try:
+                            video_source = (last_data or {}).get('params', {}).get('source', '')
+                            video_name = (last_data or {}).get('params', {}).get('video_name', '')
+                            if not video_name and video_source:
+                                video_name = os.path.basename(str(video_source).replace('\\', '/'))
                             publisher.publish_command_result(
                                 command_id='auto-stop',
                                 action='stop_pipeline',
                                 status='completed',
-                                message='Video playback finished (code 0). Display window closed.'
+                                message={
+                                    'event': 'pipeline_finished',
+                                    'status': 'completed',
+                                    'text': 'Đã hoàn thành phân tích video: %s' % (video_name or 'file'),
+                                    'video_name': video_name,
+                                    'source_type': 'file'
+                                }
                             )
                         except Exception as e:
                             _log('Failed to notify auto-stop via MQTT: %s' % e)
+
+                        bench_info = _find_latest_benchmark_dir(SCRIPT_DIR)
+                        if bench_info:
+                            _log('[BENCHMARK] Báo cáo hiệu năng video %s đã lưu tại: %s' % (video_name or 'file', bench_info))
+                        # EOS đã đưa main.py qua cleanup/finally; chờ thêm để Argus,
+                        # GStreamer và nhánh RTSP/MediaMTX nhả hết tài nguyên trước
+                        # khi cho phép start CSI hoặc video khác.
+                        time.sleep(PIPELINE_SWITCH_COOLDOWN_SEC)
                         continue
 
                     # 3. Crash bất thường (retcode != 0 hoặc CSI camera bị ngắt) -> Watchdog kích hoạt
